@@ -1,0 +1,94 @@
+{
+  "project_root": "../..",
+  "part3_root": "part3",
+  "gaussian_splatting_root": "gaussian-splatting",
+  "dust3r_to_colmap_root": "outputs/dust3r_to_colmap",
+  "dust3r_outputs_root": "outputs/dust3r",
+  "data_p2_sparse_root": "data_p2_sparse",
+  "dynami_crafter_root": "part3/DynamiCrafter",
+  "dynami_crafter_interp_ckpt": "part3/DynamiCrafter512_interp.ckpt",
+  "workspace_root": "part3/workspace",
+  "defaults": {
+    "dust3r_variant": "dust3r_light",
+    "num_intermediate_views": 4,
+    "max_pairs": 2,
+    "prompt": "novel view interpolation, geometrically consistent scene, stable camera motion",
+    "dynami_crafter": {
+      "steps": 50,
+      "cfg_scale": 7.5,
+      "eta": 1.0,
+      "fs": 10,
+      "seed": 123,
+      "resolution": "384_512"
+    },
+    "geometry": {
+      "splat_radius": 2
+    },
+    "pseudo_filter": {
+      "keep_ratio": 0.8,
+      "min_keep_per_clip": 1,
+      "pose_min_matches": 20,
+      "pose_min_inliers": 12
+    },
+    "confidence": {
+      "border_margin_ratio": 0.04,
+      "flow_sigma": 1.5,
+      "anchor_sigma": 0.25,
+      "reproj_sigma": 0.2,
+      "alpha_threshold": 0.05,
+      "boundary_percentile": 90.0,
+      "boundary_dilate": 3
+    },
+    "feature": {
+      "backend": "dust3r",
+      "cache": true,
+      "sigma": 0.35,
+      "stride": 2
+    },
+    "consistency": {
+      "enable_clip_consistency": false,
+      "clip_weights": {
+        "flow": 0.25,
+        "reproj": 0.35,
+        "feat": 0.25,
+        "pose": 0.15
+      },
+      "enable_patch_pruning": false,
+      "patch_size": 16,
+      "patch_threshold": 0.25,
+      "patch_low_weight": 0.05,
+      "patch_min_keep_ratio": 0.1
+    },
+    "online_confidence": {
+      "enabled": false,
+      "refresh_interval": 500,
+      "writeback_interval": 1000,
+      "rgb_sigma": 0.2,
+      "feature_sigma": 0.25
+    },
+    "diagnostics": {
+      "export_png": true,
+      "interval": 1000,
+      "debug_views": 4
+    },
+    "ablation": {
+      "use_c_vis": true,
+      "use_c_reproj": true,
+      "use_c_feat": true,
+      "use_c_temp": true,
+      "use_clip_consistency": false,
+      "use_patch_pruning": false
+    },
+    "training": {
+      "pseudo_warmup_iters": 2000,
+      "pseudo_full_iters": 8000,
+      "pseudo_ratio_mid": 0.25,
+      "pseudo_ratio_final": 0.5,
+      "pseudo_weight_mid": 0.2,
+      "pseudo_weight_final": 0.5,
+      "enable_pseudo_lpips": false,
+      "pseudo_lpips_weight": 0.05
+    }
+  }
+}
+

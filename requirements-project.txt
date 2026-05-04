@@ -1,0 +1,14 @@
+# Shared utilities used by the project wrapper scripts and analysis code.
+# Install this inside the DUSt3R / 3DGS environment as needed.
+numpy>=1.24,<2.0
+Pillow>=10,<13
+matplotlib>=3.7,<4
+opencv-python>=4.8,<5
+imageio>=2.31,<3
+imageio-ffmpeg>=0.4,<1
+tqdm>=4.65,<5
+scipy>=1.10,<2
+einops>=0.6,<1
+trimesh>=4,<5
+tensorboard>=2.13,<3
+

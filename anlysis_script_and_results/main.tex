@@ -1,0 +1,533 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+% This file is self-contained for Overleaf.  If the official CVPR template
+% files are present, cvpr.sty will be used; otherwise a compact CVPR-like
+% fallback layout is used so the report still compiles directly.
+\IfFileExists{cvpr.sty}{
+  \usepackage{cvpr}
+}{
+  \usepackage[margin=0.75in]{geometry}
+  \setlength{\columnsep}{0.22in}
+}
+
+\usepackage{times}
+\usepackage{epsfig}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{xcolor}
+\IfFileExists{dblfloatfix.sty}{\usepackage{dblfloatfix}}{}
+\IfFileExists{placeins.sty}{\usepackage{placeins}}{\newcommand{\FloatBarrier}{}}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{url}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!55!black
+}
+
+\newcommand{\repo}{\url{https://github.com/xma688/CVproj}}
+\newcommand{\methodname}{GenSparse3D}
+\newcommand{\maybeincludegraphics}[2][]{%
+  \IfFileExists{#2}{%
+    \includegraphics[#1]{#2}%
+  }{%
+    \fbox{%
+      \begin{minipage}[c][0.15\textheight][c]{0.94\linewidth}
+        \centering\footnotesize Missing figure\\[2pt]
+        \texttt{\detokenize{#2}}
+      \end{minipage}%
+    }%
+  }%
+}
+\newcommand{\confcell}[1]{%
+  \begin{minipage}[t]{\linewidth}
+    \centering\maybeincludegraphics[width=\linewidth]{#1}
+  \end{minipage}%
+}
+\newcommand{\routecell}[1]{%
+  \begin{minipage}[t]{\linewidth}
+    \vspace{0.33in}\centering\scriptsize\textbf{#1}
+  \end{minipage}%
+}
+
+\setlength{\tabcolsep}{3.2pt}
+\renewcommand{\arraystretch}{1.05}
+\setcounter{topnumber}{5}
+\setcounter{bottomnumber}{5}
+\setcounter{totalnumber}{8}
+\setcounter{dbltopnumber}{4}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\bottomfraction}{0.90}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.85}
+\renewcommand{\dbltopfraction}{0.95}
+\renewcommand{\dblfloatpagefraction}{0.85}
+\raggedbottom
+
+\title{Generative Sparse-View 3D Reconstruction with Confidence-Aware Pseudo-Views}
+
+\author{
+  AIAA 3201 Project Team\\
+  \small AIAA 3201 Introduction to Computer Vision, Spring 2026\\
+  \small Project 4: Generative Sparse-View 3D Reconstruction
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report studies 3D reconstruction as the input setting moves from dense posed videos to sparse unposed views and finally to generative view completion.  We first compare standard COLMAP initialization against a 3D foundation model initialization for 3D Gaussian Splatting (3DGS), then build a DUSt3R-based sparse unposed reconstruction pipeline, and finally augment sparse reconstructions with video-diffusion pseudo-views.  For the generative stage, we implement a modular pipeline that synthesizes interpolated views with DynamiCrafter, binds them to interpolated or refined poses, writes them back to COLMAP/3DGS format, and trains 3DGS with confidence-aware pseudo-view supervision.  The main Part 3 contribution is a mask and consistency stack with two backends: a manual route based on coarse visibility, reprojection, lightweight feature similarity, optical flow, clip scoring, and patch pruning; and a pretrained route that replaces the feature and temporal backends with MASt3R and SEA-RAFT.  Across the three mandatory scenes, COLMAP remains the strongest dense initializer, DUSt3R provides a workable sparse unposed baseline, and generated pseudo-views improve weak sparse DUSt3R reconstructions by up to 4.12 dB PSNR at 30k iterations.  The pretrained backend is competitive with the manual confidence route, especially on Re10k-1 at 15k iterations, but does not uniformly dominate it.  The project repository is available at \repo.
+\end{abstract}
+
+\section{Introduction}
+
+Sparse-view 3D reconstruction is difficult because the reconstruction system must solve several coupled problems at once: camera pose estimation, scale alignment, geometry initialization, and view-dependent appearance optimization.  The project is organized around this progression.  Part 1 starts from dense data and asks how much the final 3DGS model depends on initialization.  Part 2 removes known poses and keeps only very sparse frames.  Part 3 asks whether generative models can hallucinate missing viewpoints in a useful enough way to improve optimization rather than corrupt geometry.
+
+Our implementation follows this structure.  In Part 1, we compare a classical COLMAP SfM initialization against a VGGT foundation-model initialization.  In Part 2, we use DUSt3R to predict pairwise geometry and globally align sparse views before exporting a COLMAP-compatible scene for 3DGS.  In Part 3, we build a generative enhancement stack around DynamiCrafter.  The generated views are not treated as ground truth.  Instead, each pseudo-view receives an alpha confidence mask and a lower training weight, so reliable regions can guide the Gaussian optimization while unreliable generated textures are down-weighted.
+
+The main findings are:
+\textbf{(1)} Dense COLMAP initialization is much more reliable than the current VGGT-to-COLMAP conversion for 3DGS on our scenes.
+\textbf{(2)} DUSt3R gives a workable sparse unposed initialization, but the resulting pose and scale errors still limit rendering quality.
+\textbf{(3)} Generative pseudo-views help most when the sparse DUSt3R baseline is weak, improving 30k-iteration PSNR from 11.07 to 15.18 dB on Re10k-1 and from 11.63 to 14.31 dB on DL3DV-2.
+\textbf{(4)} Confidence fusion is essential for making Part 3 controllable: the manual route is simple and stable, while the MASt3R/SEA-RAFT route provides a stronger plug-in test of geometry-aware matching and temporal consistency.
+
+\section{Related Work}
+
+\paragraph{Radiance-field and Gaussian reconstruction.}
+3D Gaussian Splatting represents scenes with anisotropic Gaussian primitives and optimizes them through differentiable splatting, enabling high-quality real-time rendering from posed images \cite{kerbl2023gaussian}.  Later work improves structure and level-of-detail management, for example Scaffold-GS \cite{lu2024scaffold} and Wavelet-GS \cite{zhao2025wavelet}.  Our project keeps the standard 3DGS optimizer as the core renderer so that changes in initialization and pseudo-view supervision are easy to isolate.  Classical datasets and reconstruction benchmarks such as Mip-NeRF360 \cite{barron2022mipnerf} and Tanks and Temples \cite{knapitsch2017tanks} motivate the evaluation style, while our mandatory data comes from Waymo \cite{sun2020waymo}, DL3DV \cite{ling2024dl3dv}, and RealEstate10K-like video clips.
+
+\paragraph{Geometry initialization.}
+COLMAP and related SfM systems build sparse point clouds and calibrated camera trajectories from image correspondences \cite{agarwal2011building}.  Recent 3D foundation models such as DUSt3R \cite{wang2024dust3r}, VGGT \cite{wang2025vggt}, Pi3 \cite{wang2025pi3}, and MapAnything \cite{keetha2025mapanything} predict geometry directly from image inputs and reduce the dependence on handcrafted matching.  Our Part 1 compares these two families in the simplest setting: dense-view 3DGS with different initial scenes.  Our Part 2 uses DUSt3R because it exposes pointmaps, confidence maps, and camera estimates that can be converted to COLMAP format.
+
+\paragraph{Unposed sparse-view reconstruction.}
+Sparse unposed 3DGS methods try to avoid the requirement of accurate COLMAP poses.  InstantSplat \cite{fan2024instantsplat}, RegGS \cite{cheng2025reggs}, S3PO-GS \cite{cheng2025s3po}, Artdeco \cite{li2025artdeco}, NoPoSplat \cite{ye2024nopose}, and AnySplat \cite{jiang2025anysplat} each address sparse or unposed reconstruction through feed-forward geometry, registration, SLAM-style tracking, or online scene updates.  We implement the recommended Option A route: foundation-model prediction followed by registration and 3DGS refinement.
+
+\paragraph{Generative view completion.}
+Generative methods can supply visual evidence in regions not covered by sparse inputs.  ReconX uses video diffusion to create additional views for sparse reconstruction \cite{liu2024reconx}; BRPO introduces pseudo-view confidence fusion for sparse reconstruction \cite{zhao2026brpo}; OVIE emphasizes that invalid reprojected regions should be masked during monocular novel-view training \cite{ovie2026}; GLD repurposes geometric foundation-model correspondences for multi-view diffusion \cite{gld2026}; Difix3D+ improves 3D reconstructions with single-step diffusion priors \cite{wu2025difix3d}; and DynamiCrafter provides an image-to-video diffusion prior suitable for interpolation between endpoint images \cite{xing2024dynamicrafter}.  Our Part 3 borrows the idea of diffusion-based interpolation from ReconX, the valid-region supervision principle from OVIE, and the geometry-aware correspondence principle from GLD, but keeps the implementation course-project-friendly by writing pseudo-views back into standard COLMAP and 3DGS directories.  In the pretrained mask route we use MASt3R for reciprocal feature matching \cite{leroy2024mast3r} and SEA-RAFT for robust optical flow \cite{wang2024searaft}.
+
+\section{Method}
+
+\subsection{Data Preparation}
+
+Table~\ref{tab:datasets} summarizes the data actually used by the pipeline.  Dense sequences are used for Part 1.  For Parts 2 and 3, we subsample according to the project requirement: Waymo at approximately one frame every 10 frames, and DL3DV/Re10k at one frame every 30 frames.  The sparse frames are stored under \texttt{data\_p2\_sparse}, while the 3DGS-ready scenes are exported under \texttt{scenes\_3dgs\_p2}, \texttt{dust3r\_to\_colmap}, and the Part 3 hybrid-scene workspace.
+
+\begin{table}[!htbp]
+\centering
+\caption{Dataset configuration used in the experiments.  Generated/kept views are from the Part 3 $N=6$, keep-ratio $0.8$ configuration.}
+\label{tab:datasets}
+\begin{tabular}{lccccc}
+\toprule
+Scene & Full & Sparse & Rule & Gen. & Kept \\
+\midrule
+Waymo-405841 FRONT & 199 & 21 & 1/10 & 120 & 100 \\
+DL3DV-2 & 306 & 12 & 1/30 & 66 & 55 \\
+Re10k-1 & 279 & 11 & 1/30 & 60 & 50 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Part 1: Dense Initialization Analysis}
+
+For Plan A, we run COLMAP to estimate cameras and sparse points, convert the camera model to the 3DGS-compatible PINHOLE format, and train 3DGS for 30k iterations.  For Plan B, we run VGGT over the dense image sequence, export predicted camera intrinsics/extrinsics and points to COLMAP text format, and train the same 3DGS code.  The purpose is not to make VGGT a perfectly tuned baseline; instead, it tests whether a zero-shot geometry model can be used as a drop-in initializer for 3DGS.
+
+Both plans use the same evaluation protocol: 3DGS renders the test split and reports PSNR, SSIM, and LPIPS.  We also record training curves and intermediate checkpoints at multiple iterations.
+
+\subsection{Part 2: Sparse Unposed Reconstruction}
+
+Part 2 removes ground-truth poses from the sparse subset.  Our pipeline uses DUSt3R to predict local pointmaps and camera estimates from image pairs.  We build pair graphs, run global alignment with DUSt3R's point cloud optimizer, export camera poses and a fused point cloud, and convert the result to COLMAP format.  A lightweight post-processing script then creates the standard 3DGS scene layout:
+\[
+\texttt{scene}/\{\texttt{images},\texttt{sparse/0}\}.
+\]
+The estimated camera trajectory is evaluated after Sim(3) alignment to ground truth using ATE RMSE.  Rendering quality is evaluated by training 3DGS from the DUSt3R scene.  We also tested different DUSt3R confidence filtering thresholds, corresponding to the analysis figures with confidence levels 0, 3, and 8.  This filtering changes how aggressively low-confidence pointmap regions are removed before export; in the final report we keep the best lightweight DUSt3R setting as the Part 2 baseline and use the threshold study mainly as a diagnostic.
+
+\subsection{Part 3: Generative Enhancement}
+
+Part 3 augments the sparse DUSt3R scene with generated pseudo-views.  We designed it as a ReconX-style hybrid pipeline rather than a replacement for the renderer or the sparse reconstruction backend.  The input is the Part 2 sparse scene: real sparse images, estimated intrinsics/extrinsics, and a coarse geometry renderer that can produce coarse RGB, depth, alpha, and normal maps at interpolated viewpoints.  For each adjacent sparse-frame pair, we interpolate $N=6$ intermediate camera poses, render coarse guidance at those poses, run pseudo-view generation, filter unreliable frames, compute confidence maps, build a hybrid COLMAP scene, and train 3DGS with masked pseudo supervision.
+
+\paragraph{Pseudo-view generation and pose binding.}
+DynamiCrafter is used as the image-to-video generator.  For each local anchor pair, the start/end real images define a short camera-motion clip, and the generated frames are sampled and assigned to the interpolated poses.  The prompt used in our experiments is:
+\begin{quote}
+\small ``novel view interpolation, geometrically consistent scene, stable camera motion.''
+\end{quote}
+The generation stage is deliberately local: we generate many short clips between adjacent sparse frames rather than one long trajectory.  After generation, each pseudo-view is resized to the target scene resolution and scored against the coarse render.  When enough image-to-coarse matches are available, we refine the assigned pose with ORB matching and PnP/RANSAC; otherwise we keep the interpolated pose and reduce confidence through reprojection and clip consistency.  The final Part 3 setting keeps roughly 80\% of the generated frames: 100/120 for Waymo-405841, 55/66 for DL3DV-2, and 50/60 for Re10k-1.
+
+\paragraph{Manual confidence fusion.}
+Generated views often contain temporal flicker, letterboxing, texture drift, or geometry-inconsistent hallucinations.  We therefore compute confidence components before adding pseudo-views to training:
+\begin{itemize}
+  \item $C_{\mathrm{vis}}$: hard validity from coarse alpha/depth visibility and padding detection;
+  \item $C_{\mathrm{reproj}}$: agreement with anchor views after reprojection through coarse depth;
+  \item $C_{\mathrm{feat}}$: dense feature similarity between the pseudo-view and the anchor-reprojected blend;
+  \item $C_{\mathrm{temp}}$: temporal consistency from forward/backward optical-flow checks across generated frames;
+  \item $C_{\mathrm{patch}}$: patch-level pruning of unreliable regions;
+  \item $S_{\mathrm{clip}}$: clip-level sampling score from flow, reprojection, feature, and pose smoothness.
+\end{itemize}
+The fused mask follows
+\begin{equation}
+C_{\mathrm{soft}} =
+0.4C_{\mathrm{reproj}} + 0.3C_{\mathrm{feat}} + 0.3C_{\mathrm{temp}},
+\end{equation}
+\begin{equation}
+C =
+C_{\mathrm{hard}} C_{\mathrm{patch}} \cdot
+\left(c_0 + (1-c_0) C_{\mathrm{soft}}\right),
+\quad c_0=0.3,
+\end{equation}
+where $C_{\mathrm{hard}}$ includes $C_{\mathrm{vis}}$ and padding validity.  In implementation, $C$ is written into the alpha channel of each pseudo-view PNG and also saved as NumPy masks and preview images.
+
+\paragraph{Consistency-aware pruning.}
+The consistency module is deliberately separated into two levels.  Patch pruning handles spatial reliability by down-weighting low-confidence $16\times16$ regions instead of deleting whole pseudo-views.  Clip consistency handles sample-level reliability: each generated clip receives a score
+\begin{equation}
+S_{\mathrm{clip}} =
+w_fS_{\mathrm{flow}} + w_rS_{\mathrm{reproj}} + w_mS_{\mathrm{feat}} + w_pS_{\mathrm{pose}},
+\end{equation}
+where flow measures temporal stability, reprojection measures coarse-geometry agreement, feature score measures cross-view appearance agreement, and pose score penalizes discontinuous refined poses.  In the final implementation, $S_{\mathrm{clip}}$ affects sampling and manifest statistics, while the pixel/patch confidence map controls the pseudo loss.  This avoids the failure mode where clip scores multiply already-small masks and remove nearly all pseudo supervision.
+
+\paragraph{Pretrained confidence route.}
+In addition to the manual route, we implemented a parallel pretrained route under \texttt{part3\_stack\_pretrained}.  This route keeps the same pseudo views, hybrid scene format, confidence manifest, and 3DGS training interface, but replaces two confidence backends offline:
+\begin{itemize}
+  \item MASt3R replaces the manual feature backend for $C_{\mathrm{feat}}$ and $S_{\mathrm{feat}}$.  We run official-style pair inference, extract descriptors, compute reciprocal nearest-neighbor matches between a pseudo-view and the anchor-reprojected reference, and convert match density into patch-level confidence.
+  \item SEA-RAFT replaces the lightweight flow backend for $C_{\mathrm{temp}}$ and $S_{\mathrm{flow}}$.  We estimate forward and backward flow between adjacent generated frames, compute cycle error, optionally use SEA-RAFT uncertainty output, and convert it to temporal confidence.
+\end{itemize}
+Both models are used only during offline confidence-map construction.  Training never runs MASt3R or SEA-RAFT in the loop, which keeps the 3DGS optimizer unchanged and makes the pretrained route directly comparable to the manual route.
+
+\paragraph{Hybrid optimization.}
+The hybrid scene keeps real sparse views in the train/test split and adds pseudo-views only to the training set.  We modified the 3DGS training entrypoint so that pseudo-view supervision uses masked L1/SSIM losses, lower pseudo-view sampling weights, and an optional online confidence refresh.  Training proceeds in three stages: real-only warmup for 2k iterations, low-weight pseudo supervision until 8k iterations, and full hybrid sampling afterward.  The default pseudo sampling ratio is 0.25 in the middle stage and 0.5 in the final stage, with pseudo loss weights 0.2 and 0.5 respectively.
+
+\section{Experiments}
+
+\subsection{Metrics and Protocol}
+
+Rendering quality is measured with PSNR, SSIM, and LPIPS on held-out test views.  Pose quality for Part 2 is measured with ATE RMSE after Sim(3) alignment to the available ground-truth trajectory.  All reported 3DGS numbers use the \texttt{ours\_30000} checkpoint unless explicitly stated.  Part 3 also records pseudo-view retention and confidence statistics from the generated manifests.
+
+\subsection{Part 1 Results}
+
+Table~\ref{tab:part1} shows that COLMAP initialization is much stronger than our current VGGT export path.  On all three dense scenes, COLMAP reaches above 32.9 dB PSNR and low LPIPS, while VGGT initialization remains near 12--15 dB.  Visual inspection of the exported VGGT scenes suggests that the camera/scale conversion is the main bottleneck: 3DGS can optimize appearance only when the initial camera coordinate system and point cloud are sufficiently consistent.
+
+\begin{table*}[t]
+\centering
+\caption{Part 1 dense-view 3DGS results.  Plan A is COLMAP initialization; Plan B is VGGT initialization exported to COLMAP format.}
+\label{tab:part1}
+\begin{tabular}{lcccccc}
+\toprule
+\multirow{2}{*}{Scene} &
+\multicolumn{3}{c}{Plan A: COLMAP + 3DGS} &
+\multicolumn{3}{c}{Plan B: VGGT + 3DGS} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+& PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$
+& PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$ \\
+\midrule
+Waymo-405841 FRONT & 32.96 & 0.938 & 0.202 & 15.13 & 0.662 & 0.505 \\
+DL3DV-2            & 35.34 & 0.973 & 0.038 & 11.93 & 0.348 & 0.635 \\
+Re10k-1            & 35.89 & 0.985 & 0.017 & 12.19 & 0.410 & 0.516 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}{0.48\linewidth}
+  \centering
+  \maybeincludegraphics[width=\linewidth]{anlysis_script_and_results/part1/final_psnr_comparison.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\linewidth}
+  \centering
+  \maybeincludegraphics[width=\linewidth]{anlysis_script_and_results/part1/convergence_comparison.png}
+\end{minipage}
+\caption{Part 1 analysis figures generated from the training logs.  The left plot compares final PSNR; the right plot compares convergence.}
+\label{fig:part1}
+\end{figure*}
+
+\subsection{Part 2 Results}
+
+Table~\ref{tab:part2} reports sparse unposed reconstruction results.  DUSt3R estimates usable poses for all three sparse scenes, with the lowest ATE on Re10k-1.  Rendering quality remains below dense COLMAP, which is expected because Part 2 has far fewer input frames and no known camera poses.  The Waymo scene achieves the best sparse DUSt3R rendering PSNR, likely because the 1/10 sparse sampling keeps more frames than the 1/30 indoor/outdoor scenes.  Re10k-1 is interesting: sparse COLMAP with the selected sparse images reaches 15.93 dB, but the unposed DUSt3R 3DGS baseline is only 11.07 dB, leaving room for Part 3 to help.
+
+\begin{table*}[t]
+\centering
+\caption{Part 2 sparse-view reconstruction.  DUSt3R ATE is computed after Sim(3) alignment.  COLMAP sparse is included where a sparse COLMAP 3DGS baseline was available.}
+\label{tab:part2}
+\begin{tabular}{lccccccc}
+\toprule
+\multirow{2}{*}{Scene} & \multirow{2}{*}{ATE RMSE$\downarrow$} &
+\multicolumn{3}{c}{DUSt3R sparse + 3DGS} &
+\multicolumn{3}{c}{COLMAP sparse + 3DGS} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+& & PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$
+& PSNR$\uparrow$ & SSIM$\uparrow$ & LPIPS$\downarrow$ \\
+\midrule
+Waymo-405841 FRONT & 1.029 & 19.20 & 0.580 & 0.383 & -- & -- & -- \\
+DL3DV-2            & 0.502 & 11.63 & 0.309 & 0.566 & 8.11 & 0.264 & 0.715 \\
+Re10k-1            & 0.166 & 11.07 & 0.445 & 0.406 & 15.93 & 0.621 & 0.419 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}{0.48\linewidth}
+  \centering
+  \maybeincludegraphics[width=\linewidth]{anlysis_script_and_results/part2/ate_rmse_comparison.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\linewidth}
+  \centering
+  \maybeincludegraphics[width=\linewidth]{anlysis_script_and_results/part2/final_psnr_comparison.png}
+\end{minipage}
+\caption{Part 2 pose and rendering analysis.  The left plot summarizes ATE RMSE; the right plot compares final sparse-view PSNR.}
+\label{fig:part2}
+\end{figure*}
+
+\subsection{Part 3 Results}
+
+Table~\ref{tab:part3} reports the complete Part 3 ablation set.  The \textbf{raw} variant keeps generated pseudo-views but disables confidence and consistency components; \textbf{conf} enables $C_{\mathrm{vis}}$, $C_{\mathrm{reproj}}$, $C_{\mathrm{feat}}$, and $C_{\mathrm{temp}}$; and \textbf{full} additionally enables clip consistency and patch pruning.  The manual route uses the hand-designed feature/flow confidence backends, while the pretrained route uses MASt3R for feature confidence and SEA-RAFT for temporal confidence.  We did not rerun a pretrained raw baseline because raw explicitly disables the pretrained mask components and is therefore equivalent in spirit to the manual raw control.
+
+Generated views clearly help the weakest sparse DUSt3R cases.  Compared with the Part 2 sparse DUSt3R baseline, Re10k-1 improves from 11.07 dB to 15.18 dB at 30k with manual full, and DL3DV-2 improves from 11.63 dB to 14.31 dB with raw generated views.  Waymo-405841 is already strong with sparse DUSt3R; there the best generated result is manual conf at 19.90 dB.  The pretrained route is competitive but not uniformly better: it gives the best 15k PSNR on Re10k-1, while the manual route remains slightly stronger at 30k on most scenes.  A consistent pattern is that many runs peak at 15k and decline by 30k, suggesting that early stopping or a weaker late-stage pseudo ratio would be useful.
+
+\begin{table*}[t]
+\centering
+\caption{Part 3 generated-view ablations.  Manual uses the hand-designed confidence route; pretrained uses MASt3R for $C_{\mathrm{feat}}/S_{\mathrm{feat}}$ and SEA-RAFT for $C_{\mathrm{temp}}/S_{\mathrm{flow}}$.}
+\label{tab:part3}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lllcccccc}
+\toprule
+Scene & Route & Variant &
+PSNR@15k$\uparrow$ & SSIM@15k$\uparrow$ & LPIPS@15k$\downarrow$ &
+PSNR@30k$\uparrow$ & SSIM@30k$\uparrow$ & LPIPS@30k$\downarrow$ \\
+\midrule
+Waymo-405841 FRONT & manual & raw  & 19.368 & 0.656 & 0.403 & 19.098 & \textbf{0.642} & \textbf{0.397} \\
+Waymo-405841 FRONT & manual & conf & \textbf{20.261} & \textbf{0.659} & 0.406 & \textbf{19.897} & 0.639 & 0.412 \\
+Waymo-405841 FRONT & manual & full & 20.193 & 0.655 & 0.405 & 19.641 & 0.630 & 0.415 \\
+Waymo-405841 FRONT & pretrained & conf & 19.995 & 0.654 & 0.407 & 19.608 & 0.636 & 0.415 \\
+Waymo-405841 FRONT & pretrained & full & 20.099 & 0.653 & \textbf{0.403} & 19.799 & 0.641 & 0.408 \\
+\midrule
+DL3DV-2 & manual & raw  & \textbf{15.117} & \textbf{0.475} & \textbf{0.504} & \textbf{14.312} & \textbf{0.449} & \textbf{0.503} \\
+DL3DV-2 & manual & conf & 14.593 & 0.462 & 0.515 & 14.164 & 0.442 & 0.511 \\
+DL3DV-2 & manual & full & 14.601 & 0.463 & 0.514 & 14.035 & 0.434 & 0.517 \\
+DL3DV-2 & pretrained & conf & 14.753 & 0.461 & 0.512 & 14.107 & 0.438 & 0.516 \\
+DL3DV-2 & pretrained & full & 14.731 & 0.462 & 0.509 & 13.931 & 0.436 & 0.517 \\
+\midrule
+Re10k-1 & manual & raw  & 15.178 & 0.573 & 0.320 & 14.913 & 0.556 & 0.325 \\
+Re10k-1 & manual & conf & 15.336 & 0.591 & 0.318 & 15.105 & \textbf{0.579} & 0.320 \\
+Re10k-1 & manual & full & 15.587 & \textbf{0.600} & \textbf{0.312} & \textbf{15.183} & 0.576 & \textbf{0.319} \\
+Re10k-1 & pretrained & conf & 15.634 & 0.596 & 0.317 & 15.114 & 0.571 & 0.324 \\
+Re10k-1 & pretrained & full & \textbf{15.646} & 0.595 & 0.316 & 15.136 & 0.570 & 0.323 \\
+\bottomrule
+\end{tabular}
+}
+\end{table*}
+
+\begin{table}[t]
+\centering
+\caption{Re10k-1 pseudo-view retention study.  $N=6$ with keep ratio $0.8$ was selected as the default because it retains 50 of 60 generated views while avoiding the extra runtime of $N=8$.}
+\label{tab:retention}
+\begin{tabular}{lccccc}
+\toprule
+Trial & $N$ & Gen. & Kept & Med. conf. & Med. clip \\
+\midrule
+Scan & 4 & 40 & 40 & 0.244 & 0.731 \\
+Scan & 6 & 60 & 60 & 0.249 & 0.731 \\
+Scan & 8 & 80 & 80 & 0.249 & 0.732 \\
+Validate & 6 & 60 & 50 & 0.249 & 0.733 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{1pt}
+\renewcommand{\arraystretch}{0.92}
+\begin{tabular}{@{}p{0.070\textwidth}p{0.120\textwidth}p{0.120\textwidth}p{0.120\textwidth}p{0.120\textwidth}p{0.120\textwidth}p{0.120\textwidth}p{0.120\textwidth}@{}}
+& \multicolumn{1}{c}{Pseudo}
+& \multicolumn{1}{c}{Manual $C_f$}
+& \multicolumn{1}{c}{MASt3R $C_f$}
+& \multicolumn{1}{c}{Manual $C_t$}
+& \multicolumn{1}{c}{SEA-RAFT $C_t$}
+& \multicolumn{1}{c}{Manual mask}
+& \multicolumn{1}{c}{Pretrained mask}\tabularnewline[-2pt]
+\routecell{405841}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_pseudo.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_manual_c_feat.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_pretrained_c_feat.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_manual_c_temp.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_pretrained_c_temp.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_manual_confidence.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/405841_pretrained_confidence.png}\tabularnewline[2pt]
+\routecell{DL3DV}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_pseudo.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_manual_c_feat.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_pretrained_c_feat.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_manual_c_temp.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_pretrained_c_temp.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_manual_confidence.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/dl3dv_pretrained_confidence.png}\tabularnewline[2pt]
+\routecell{Re10k}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_pseudo.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_manual_c_feat.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_pretrained_c_feat.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_manual_c_temp.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_pretrained_c_temp.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_manual_confidence.png}
+& \confcell{anlysis_script_and_results/part3/conf_examples/re10k_pretrained_confidence.png}
+\end{tabular}
+\caption{Confidence and consistency examples assembled directly in LaTeX from individual images.  For each dataset, we show the pseudo-view, manual feature/temporal confidence, pretrained feature/temporal confidence, and the final masks produced by the two routes.  The pretrained route uses MASt3R reciprocal match density for $C_f$ and SEA-RAFT forward/backward consistency for $C_t$.}
+\label{fig:part3conf}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\maybeincludegraphics[width=\textwidth]{anlysis_script_and_results/part3/part3_render_examples.png}
+\caption{Final 30k render examples.  Generated-view training improves the weak sparse DUSt3R initialization on Re10k-1, while DL3DV-2 remains the hardest case because generated outdoor textures and sparse geometry are less stable.}
+\label{fig:part3render}
+\end{figure*}
+
+\subsection{Part 3 Status and Failure Cases}
+
+Part 3 is implemented end-to-end for pseudo-view generation, hybrid scene construction, confidence map export, confidence-aware training, diagnostics, and evaluation.  The manual route and the pretrained route share the same manifest/training interface, so they can be compared without changing the downstream 3DGS optimizer.  The main limitations are now modeling and calibration issues rather than missing project functionality.
+
+First, generated pseudo-views are helpful but noisy.  Confidence maps can suppress invalid regions, padding, flicker, and poor reprojection agreement, but they cannot create missing geometry when the sparse DUSt3R scene is already badly misaligned.  This is most visible on DL3DV-2, where generated views improve the sparse baseline but confidence variants do not beat raw generated views.  Second, the pretrained route is stronger in principle but not automatically stronger in the final 3DGS metric.  MASt3R match density can become sparse in low-texture indoor regions or reflective outdoor regions, and SEA-RAFT temporal confidence can down-weight real appearance changes as if they were flow inconsistency.  Third, several experiments peak at 15k and then decline by 30k, indicating that late-stage pseudo supervision can overfit generated artifacts.  A stronger final system should use adaptive pseudo ratios, early stopping, and a geometry loss or depth regularizer that directly penalizes drift.
+
+\section{Conclusion}
+
+This project demonstrates the full path from dense posed reconstruction to unposed sparse reconstruction and generative sparse-view enhancement.  The strongest dense results come from COLMAP initialization, confirming that 3DGS is highly sensitive to camera and point-cloud quality.  DUSt3R provides a practical way to bootstrap sparse unposed reconstruction, but pose and scale errors reduce rendering quality.  The generative Part 3 pipeline shows that pseudo-views can improve weak sparse DUSt3R baselines when they are inserted carefully and weighted by confidence.  The manual confidence route is stable and easy to control; the MASt3R/SEA-RAFT route gives a clean validation of stronger pretrained backends while preserving the same training interface.  The most promising future work is to calibrate pretrained confidence maps against real held-out views, use adaptive late-stage pseudo sampling, improve pseudo-view pose refinement, and add depth or reprojection losses that directly penalize geometry drift during 3DGS optimization.
+
+\begin{thebibliography}{99}
+\bibitem{agarwal2011building}
+S. Agarwal, Y. Furukawa, N. Snavely, I. Simon, B. Curless, S. M. Seitz, and R. Szeliski.
+Building Rome in a day.
+\emph{Communications of the ACM}, 54(10):105--112, 2011.
+
+\bibitem{barron2022mipnerf}
+J. T. Barron, B. Mildenhall, D. Verbin, P. P. Srinivasan, and P. Hedman.
+Mip-NeRF 360: Unbounded anti-aliased neural radiance fields.
+In \emph{CVPR}, pages 5470--5479, 2022.
+
+\bibitem{cheng2025reggs}
+C. Cheng, Y. Hu, S. Yu, B. Zhao, Z. Wang, and H. Wang.
+RegGS: Unposed sparse views Gaussian splatting with 3DGS registration.
+In \emph{ICCV}, pages 8100--8109, 2025.
+
+\bibitem{cheng2025s3po}
+C. Cheng, S. Yu, Z. Wang, Y. Zhou, and H. Wang.
+Outdoor monocular SLAM with global scale-consistent 3D Gaussian pointmaps.
+In \emph{ICCV}, pages 26035--26044, 2025.
+
+\bibitem{fan2024instantsplat}
+Z. Fan, W. Cong, K. Wen, K. Wang, J. Zhang, X. Ding, D. Xu, B. Ivanovic, M. Pavone, G. Pavlakos, et al.
+InstantSplat: Sparse-view Gaussian splatting in seconds.
+\emph{arXiv preprint arXiv:2403.20309}, 2024.
+
+\bibitem{jiang2025anysplat}
+L. Jiang, Y. Mao, L. Xu, T. Lu, K. Ren, Y. Jin, X. Xu, M. Yu, J. Pang, F. Zhao, et al.
+AnySplat: Feed-forward 3D Gaussian splatting from unconstrained views.
+\emph{ACM Transactions on Graphics}, 44(6):1--16, 2025.
+
+\bibitem{keetha2025mapanything}
+N. Keetha, N. Muller, J. Schonberger, L. Porzi, Y. Zhang, T. Fischer, A. Knapitsch, D. Zauss, E. Weber, N. Antunes, et al.
+MapAnything: Universal feed-forward metric 3D reconstruction.
+\emph{arXiv preprint arXiv:2509.13414}, 2025.
+
+\bibitem{kerbl2023gaussian}
+B. Kerbl, G. Kopanas, T. Leimkuehler, and G. Drettakis.
+3D Gaussian splatting for real-time radiance field rendering.
+\emph{ACM Transactions on Graphics}, 42(4):1--14, 2023.
+
+\bibitem{knapitsch2017tanks}
+A. Knapitsch, J. Park, Q.-Y. Zhou, and V. Koltun.
+Tanks and Temples: Benchmarking large-scale scene reconstruction.
+\emph{ACM Transactions on Graphics}, 36(4):1--13, 2017.
+
+\bibitem{leroy2024mast3r}
+V. Leroy, Y. Cabon, and J. Revaud.
+Grounding image matching in 3D with MASt3R.
+In \emph{ECCV}, 2024.
+
+\bibitem{li2025artdeco}
+G. Li, K. Ren, L. Xu, Z. Zheng, C. Jiang, X. Gao, B. Dai, J. Pu, M. Yu, and J. Pang.
+Artdeco: Towards efficient and high-fidelity on-the-fly 3D reconstruction with structured scene representation.
+\emph{arXiv preprint arXiv:2510.08551}, 2025.
+
+\bibitem{ling2024dl3dv}
+L. Ling, Y. Sheng, Z. Tu, W. Zhao, C. Xin, K. Wan, L. Yu, Q. Guo, Z. Yu, Y. Lu, et al.
+DL3DV-10K: A large-scale scene dataset for deep learning-based 3D vision.
+In \emph{CVPR}, pages 22160--22169, 2024.
+
+\bibitem{liu2024reconx}
+F. Liu, W. Sun, H. Wang, Y. Wang, H. Sun, J. Ye, J. Zhang, and Y. Duan.
+ReconX: Reconstruct any scene from sparse views with video diffusion model.
+\emph{arXiv preprint arXiv:2408.16767}, 2024.
+
+\bibitem{lu2024scaffold}
+T. Lu, M. Yu, L. Xu, Y. Xiangli, L. Wang, D. Lin, and B. Dai.
+Scaffold-GS: Structured 3D Gaussians for view-adaptive rendering.
+In \emph{CVPR}, pages 20654--20664, 2024.
+
+\bibitem{ovie2026}
+A. R. Rahary, N. Dufour, P. Perez, and D. Picard.
+One View Is Enough! Monocular training for in-the-wild novel view generation.
+\emph{arXiv preprint arXiv:2603.23488}, 2026.
+
+\bibitem{sun2020waymo}
+P. Sun, H. Kretzschmar, X. Dotiwalla, A. Chouard, V. Patnaik, P. Tsui, J. Guo, Y. Zhou, Y. Chai, B. Caine, et al.
+Scalability in perception for autonomous driving: Waymo Open Dataset.
+In \emph{CVPR}, pages 2446--2454, 2020.
+
+\bibitem{wang2025vggt}
+J. Wang, M. Chen, N. Karaev, A. Vedaldi, C. Rupprecht, and D. Novotny.
+VGGT: Visual Geometry Grounded Transformer.
+In \emph{CVPR}, pages 5294--5306, 2025.
+
+\bibitem{wang2024searaft}
+Y. Wang, L. Lipson, and J. Deng.
+SEA-RAFT: Simple, efficient, accurate RAFT for optical flow.
+In \emph{ECCV}, 2024.
+
+\bibitem{wang2024dust3r}
+S. Wang, V. Leroy, Y. Cabon, B. Chidlovskii, and J. Revaud.
+DUSt3R: Geometric 3D vision made easy.
+In \emph{CVPR}, pages 20697--20709, 2024.
+
+\bibitem{wang2025pi3}
+Y. Wang, J. Zhou, H. Zhu, W. Chang, Y. Zhou, Z. Li, J. Chen, J. Pang, C. Shen, and T. He.
+Pi3: Permutation-equivariant visual geometry learning.
+\emph{arXiv preprint arXiv:2507.13347}, 2025.
+
+\bibitem{wu2025difix3d}
+J. Z. Wu, Y. Zhang, H. Turki, X. Ren, J. Gao, M. Z. Shou, S. Fidler, Z. Gojcic, and H. Ling.
+Difix3D+: Improving 3D reconstructions with single-step diffusion models.
+In \emph{CVPR}, pages 26024--26035, 2025.
+
+\bibitem{xing2024dynamicrafter}
+J. Xing, M. Xia, Y. Zhang, H. Chen, W. Yu, H. Liu, G. Liu, X. Wang, Y. Shan, and T.-T. Wong.
+DynamiCrafter: Animating open-domain images with video diffusion priors.
+In \emph{ECCV}, pages 399--417, 2024.
+
+\bibitem{gld2026}
+W. Jang, S. Jeon, J. Han, J. Choi, M. Kwon, S. Kim, S. Xie, and S. Liu.
+Repurposing geometric foundation models for multi-view diffusion.
+\emph{arXiv preprint arXiv:2603.22275}, 2026.
+
+\bibitem{ye2024nopose}
+B. Ye, S. Liu, H. Xu, X. Li, M. Pollefeys, M.-H. Yang, and S. Peng.
+No pose, no problem: Surprisingly simple 3D Gaussian splats from sparse unposed images.
+\emph{arXiv preprint arXiv:2410.24207}, 2024.
+
+\bibitem{zhao2026brpo}
+B. Zhao, S. Yu, G. Ding, Y. Hu, and H. Wang.
+Pseudo-view enhancement via confidence fusion for unposed sparse-view reconstruction.
+\emph{arXiv preprint arXiv:2602.21535}, 2026.
+
+\bibitem{zhao2025wavelet}
+B. Zhao, Y. Zhou, S. Yu, Z. Wang, and H. Wang.
+Wavelet-GS: 3D Gaussian splatting with wavelet decomposition.
+In \emph{ACM Multimedia}, pages 8616--8625, 2025.
+\end{thebibliography}
+
+\end{document}

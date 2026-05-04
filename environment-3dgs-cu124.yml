@@ -1,0 +1,25 @@
+name: cvproj-3dgs
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch=2.4.1
+  - torchvision=0.19.1
+  - torchaudio=2.4.1
+  - pytorch-cuda=12.4
+  - "mkl<2025"
+  - "intel-openmp<2025"
+  - plyfile
+  - tqdm
+  - ninja
+  - pip
+  - pip:
+      - -r requirements-project.txt
+      - joblib
+      - ./gaussian-splatting/submodules/diff-gaussian-rasterization
+      - ./gaussian-splatting/submodules/simple-knn
+      - ./gaussian-splatting/submodules/fused-ssim
+

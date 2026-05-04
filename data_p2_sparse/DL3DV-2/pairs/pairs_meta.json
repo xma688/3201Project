@@ -1,0 +1,25 @@
+﻿{
+  "scene_rel": "DL3DV-2",
+  "scene_dir": "/path/to/your/CVproj/data_p2_sparse/DL3DV-2",
+  "image_dir": "/path/to/your/CVproj/data_p2_sparse/DL3DV-2/rgb",
+  "image_dir_name": "rgb",
+  "num_images": 12,
+  "num_pairs": 48,
+  "scene_graph": "swin-2",
+  "prefilter": "none",
+  "symmetrize": true,
+  "images": [
+    "frame_00001.png",
+    "frame_00031.png",
+    "frame_00061.png",
+    "frame_00091.png",
+    "frame_00121.png",
+    "frame_00151.png",
+    "frame_00181.png",
+    "frame_00211.png",
+    "frame_00241.png",
+    "frame_00271.png",
+    "frame_00301.png",
+    "frame_00306.png"
+  ]
+}

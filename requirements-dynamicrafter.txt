@@ -1,0 +1,19 @@
+# DynamiCrafter dependencies used by the Part 3 pseudo-view generator.
+# Install PyTorch first via conda or the official PyTorch wheel index.
+numpy==1.26.4
+Pillow>=10,<13
+PyYAML>=6,<7
+tqdm>=4.65,<5
+decord==0.6.0
+imageio>=2.31,<3
+imageio-ffmpeg>=0.4,<1
+opencv-python>=4.8,<5
+omegaconf>=2.1,<2.4
+einops>=0.6,<0.9
+pytorch-lightning==1.9.3
+transformers==4.25.1
+huggingface_hub>=0.20,<1.0
+timm>=0.9,<1.0
+open_clip_torch==2.22.0
+kornia>=0.7,<0.9
+

@@ -1,0 +1,651 @@
+可以，下面给你一版**统合后的完整修改方案**，把 **confidence + consistency** 一起梳理成一条可落地路线。核心目标只有两个：
+
+1. **让训练目标真正合理**，不要再出现“mask 越强，监督越弱，日志越好看”的假象
+2. **让评测口径和训练口径分开**，不要再用一个混了 pseudo 的 full-image 指标去判断 conf/consis 是否有效
+
+---
+
+# 一、先给总判断
+
+你现在的问题不是：
+
+* `confidence` 无效
+* `consistency` 无效
+
+而是：
+
+* **训练期指标是 masked / unnormalized 口径**
+* **离线指标是 full-image 口径**
+* **test split 混入大量 pseudo**
+* **confidence 与 consistency 又把 pseudo supervision 压得太弱**
+
+所以最终方案要同时修四件事：
+
+### 1. 评测拆分
+
+* `real_only full-image` 作为主结果
+* `pseudo_full-image` 作为辅助解释
+* `pseudo_masked_normalized` 作为 conf/consis 诊断指标
+* `pseudo_masked_unnormalized` 只保留给训练日志对照，不作为主结果
+
+### 2. confidence 训练方式修正
+
+* pseudo loss 改成 **mask-normalized weighted loss**
+* confidence 不再全乘法直接乘塌
+* 加 **confidence floor**
+
+### 3. consistency 使用方式修正
+
+* `clip_score` 不要同时影响 **采样概率 + loss weight**
+* 推荐只影响 **采样概率**
+* patch pruning 保留，但不要和 clip consistency 叠加成双重过强降权
+
+### 4. split 与路径修正
+
+* test 集只保留真实 held-out views
+* `--confidence_manifest` 一律绝对路径
+* `test.txt` 优先于默认 LLFF hold
+
+---
+
+# 二、最终推荐的训练/评测设计
+
+---
+
+## A. 训练时：把 pseudo supervision 写成“硬有效区域 × 软置信度”
+
+不要再用现在这种：
+
+[
+C = C_{vis} \cdot C_{reproj} \cdot C_{feat} \cdot C_{temp} \cdot C_{patch}
+]
+
+因为这太容易乘塌。
+
+---
+
+## 推荐改成两层结构
+
+### 第一层：硬有效区域
+
+只负责“哪些像素根本不能学”：
+
+[
+V = C_{vis} \cdot C_{patch}
+]
+
+其中：
+
+* `C_vis`：几何可见性、非 hole、边界抑制、非背面
+* `C_patch`：patch pruning 的 keep mask
+
+这层尽量偏 hard。
+
+---
+
+### 第二层：软置信度
+
+只负责“valid 区域里哪些更可信”：
+
+[
+S = w_r C_{reproj} + w_f C_{feat} + w_t C_{temp}
+]
+
+推荐初始权重：
+
+[
+w_r = 0.4,\quad w_f = 0.3,\quad w_t = 0.3
+]
+
+因为现在 `reprojection` 对几何最直接。
+
+---
+
+### 最终训练 mask
+
+[
+M = V \cdot (\lambda + (1-\lambda)S)
+]
+
+推荐：
+[
+\lambda = 0.3
+]
+
+也就是：
+
+```python id="27gizs"
+soft_conf = 0.4 * c_reproj + 0.3 * c_feat + 0.3 * c_temp
+final_mask = c_vis * c_patch * (0.3 + 0.7 * soft_conf)
+```
+
+---
+
+## 为什么这样改
+
+这一步同时解决两件事：
+
+* **conf 问题**：不再因为全乘法导致 `mean_confidence` 掉到 0.29 左右
+* **consis 问题**：patch pruning 和 consistency 不再叠加成极端弱监督
+
+---
+
+# 三、pseudo loss 的统一改法
+
+你现在最关键的 bug 是：
+
+```python id="q0gd5n"
+loss(pred * mask, gt * mask).mean()
+```
+
+这会让低 mask 直接把 loss 稀释掉。
+
+---
+
+## 推荐统一成标准 weighted loss
+
+### 1. L1
+
+```python id="g8l4pu"
+def masked_l1_loss(pred, target, mask, eps=1e-6):
+    if mask is None:
+        return torch.abs(pred - target).mean()
+    weight = mask.expand_as(pred)
+    return (torch.abs(pred - target) * weight).sum() / weight.sum().clamp_min(eps)
+```
+
+### 2. LPIPS
+
+```python id="xej18v"
+def masked_lpips_loss(pred, target, mask, lpips_fn, eps=1e-6):
+    if mask is None:
+        return lpips_fn(pred, target).mean()
+    pred_m = pred * mask
+    target_m = target * mask
+    # 先做 masked 输入，再除有效区域比例，避免 mask 稀释掉总 loss
+    raw = lpips_fn(pred_m, target_m).mean()
+    norm = mask.mean().clamp_min(eps)
+    return raw / norm
+```
+
+### 3. SSIM
+
+第一版不要强求完美 masked SSIM。
+建议先：
+
+* L1 用 normalized masked
+* LPIPS 用 normalized masked
+* SSIM 先保留原逻辑，或者只在 valid bbox 内算
+
+这样改动最小，最稳。
+
+---
+
+## 最终 pseudo loss 推荐形式
+
+[
+L_{pseudo}
+==========
+
+\lambda_{l1} L_{l1}^{masked}
++
+\lambda_{ssim} L_{ssim}
++
+\lambda_{lpips} L_{lpips}^{masked}
+]
+
+重点是：
+
+* **L1 / LPIPS 一定归一化**
+* 不再用“mask 乘黑图再直接 mean”这种写法
+
+---
+
+# 四、consistency 的使用方式要改
+
+Codex 已经确认：
+现在 `clip_score` 既影响：
+
+* `sampling_weight`
+* 又影响 `pseudo loss weight`
+
+这属于**双重降权**。
+
+对于 `gen_full`，你的近似有效 pseudo 强度已经变成：
+
+* `raw`: `0.5`
+* `conf`: `0.145`
+* `full`: `0.090`
+
+这太低了。
+
+---
+
+## 推荐改法
+
+### clip_score 只影响采样，不影响 loss scalar
+
+也就是：
+
+* 保留：
+
+  * `clip_score -> pop_weighted_pseudo_camera()`
+* 去掉：
+
+  * `loss *= clip_score`
+
+### 理由
+
+这样 consistency 的作用是：
+
+> 让更可靠的 clip 更常被采样
+
+而不是：
+
+> 已经被采样到的 pseudo view 还要再被压一遍 loss
+
+这会显著减少 `consistency` 把 pseudo supervision 压到失效的风险。
+
+---
+
+## patch pruning 保留
+
+因为 patch pruning 现在确实进入了 PNG alpha，并最终进入训练 mask，这一层是有效的。
+所以建议：
+
+* patch pruning 继续保留在 `alpha / final_mask`
+* clip consistency 只影响采样概率
+
+这样职责就清楚了：
+
+* **patch pruning**：像素/patch 级空间筛选
+* **clip consistency**：样本级时间/序列筛选
+
+---
+
+# 五、训练日志必须同时打印三种口径
+
+现在训练日志里的：
+
+* `test PSNR 27.67`
+
+本质上只是：
+
+* masked
+* unnormalized
+* 并且 test 里混了 pseudo
+
+所以这个数字必须“拆解”。
+
+---
+
+## 建议在 `training_report()` 里固定输出：
+
+### 1. `test/full_psnr`
+
+* 不乘 mask
+* 整图 RGB
+* 只对当前 eval split
+
+### 2. `test/masked_unnorm_psnr`
+
+* 保留现在的逻辑
+* 只用于和旧日志对齐
+* 明确标注 debug only
+
+### 3. `test/masked_norm_psnr`
+
+* 用 normalized masked 口径
+* 更接近真实“有效区域质量”
+
+### 4. `test/real_only_full_psnr`
+
+* 只针对真实 held-out test view
+* 这是最重要的一个
+
+### 5. `test/pseudo_only_full_psnr`
+
+* 辅助解释 consistency / confidence 的影响
+
+---
+
+## 同时加两个统计量
+
+```python id="t2wj5e"
+mask_mean = confidence_mask.mean().item()
+effective_pseudo_weight = pseudo_weight * mask_mean
+```
+
+日志里打印：
+
+```python id="fybn5m"
+print(f"[pseudo] mask_mean={mask_mean:.4f}, effective_weight={effective_pseudo_weight:.4f}")
+```
+
+你后面判断 conf/consis 是否过强，主要就看这两个数。
+
+---
+
+# 六、离线评测必须拆成四类
+
+目前 `results.json` 只有一个总均值，这已经不够用了。
+
+---
+
+## 建议 `compare_part3_metrics.py` 输出四类结果
+
+### 1. `real_only_full_metrics`
+
+主结果，报告主表看这个：
+
+* PSNR
+* SSIM
+* LPIPS
+
+### 2. `pseudo_full_metrics`
+
+解释 raw/conf/full 为什么会差异很大
+
+### 3. `pseudo_masked_normalized_metrics`
+
+这是看 confidence / consistency 是否提升“可信区域质量”的主诊断指标
+
+### 4. `pseudo_masked_unnormalized_debug`
+
+只用于对照训练日志，不进主表
+
+---
+
+## 你最终报告怎么写
+
+### 主表
+
+* `real_only full-image metrics`
+
+### 辅助表
+
+* `pseudo_full`
+* `pseudo_masked_normalized`
+* reprojection summary
+* clip consistency summary
+
+这样你就能把：
+
+* “最终真实 novel view 效果”
+  和
+* “pseudo supervision 的稳定性收益”
+  分开说清楚。
+
+---
+
+# 七、test split 必须彻底修正
+
+这是最高优先级之一。
+
+---
+
+## 当前问题
+
+你的 Re10k consistency test set 是：
+
+* `2 real + 6 pseudo`
+
+所以离线 `11.95` 不是一个合格的“最终 novel view 指标”。
+
+---
+
+## 推荐改法
+
+### 方案 1：hybrid scene 写出 `test.txt`
+
+在生成 hybrid scene 时：
+
+* 只把真实 held-out test frames 写进 `test.txt`
+
+### 方案 2：loader 优先读 `test.txt`
+
+在 `dataset_readers.py` 里：
+
+* 如果存在 `test.txt`，优先使用
+* 不再走 LLFF hold every 8
+
+### 方案 3：Part 3 eval 时显式关闭 `llffhold`
+
+让默认的自动抽样逻辑不要参与 Part 3 的最终评测。
+
+---
+
+## 最终目标
+
+对于 final report：
+
+* **真实 test split** 单独评
+* pseudo 绝不混进主 test
+
+---
+
+# 八、manifest / 路径 / 映射必须补齐
+
+---
+
+## 1. `--confidence_manifest` 一律绝对路径
+
+这是最简单的稳定性修复。
+
+---
+
+## 2. `render.py` 保存 view name 映射
+
+建议保存一个 mapping，例如：
+
+```json id="y6k6j3"
+{
+  "00001.png": {"image_name": "00000", "is_pseudo": false},
+  "00002.png": {"image_name": "pseudo_pair_0001_00", "is_pseudo": true}
+}
+```
+
+这样 compare 脚本就不用靠文件名前缀硬猜。
+
+---
+
+## 3. hybrid manifest 增加 split / is_pseudo 字段
+
+这样后面：
+
+* 训练
+* 渲染
+* 评测
+
+都能明确区分 real/pseudo。
+
+---
+
+# 九、建议按轮次实施，不要一次全改
+
+---
+
+## 第一轮：先修公平性
+
+这是必须先做的。
+
+### 要做
+
+* [ ] test split 改成真实 held-out views only
+* [ ] `--confidence_manifest` 改绝对路径
+* [ ] pseudo loss 改成 normalized masked L1
+* [ ] confidence mask 加 floor
+* [ ] clip_score 不再乘 loss，只影响采样
+
+### 目标
+
+让 `raw / conf / full` 的训练和评测终于能公平比较。
+
+---
+
+## 第二轮：再修可解释性
+
+### 要做
+
+* [ ] 训练日志同时输出 `full / masked_norm / masked_unnorm / real_only / pseudo_only`
+* [ ] compare 脚本输出四类指标
+* [ ] 记录 `mask_mean / effective_pseudo_weight / clip_score_mean / patch_keep_ratio`
+
+### 目标
+
+让你能真正解释：
+
+* conf 为什么变好/变坏
+* consis 为什么变好/变坏
+
+---
+
+## 第三轮：再修 confidence 融合形式
+
+### 要做
+
+* [ ] 从“纯乘法融合”改成“hard validity × soft weighted confidence”
+* [ ] patch pruning 保留在空间 mask
+* [ ] clip consistency 只做样本级重采样
+
+### 目标
+
+让 conf+consis 不再把 pseudo supervision 压塌。
+
+---
+
+# 十、按文件拆分的修改建议
+
+---
+
+## `train_3dgs_confidence.py`
+
+### 必改
+
+1. 新增 `masked_l1_loss`
+2. pseudo 分支改用 normalized masked loss
+3. 加 confidence floor
+4. `clip_score` 不再乘 loss
+5. `training_report()` 同时输出：
+
+   * `full`
+   * `masked_unnorm`
+   * `masked_norm`
+   * `real_only`
+   * `pseudo_only`
+6. 打印：
+
+   * `mask_mean`
+   * `effective_pseudo_weight`
+
+---
+
+## `confidence.py`
+
+### 必改
+
+1. 不再直接把所有 soft confidence 全乘到底
+2. 改成：
+
+   * `V = C_vis * C_patch`
+   * `S = 0.4*C_reproj + 0.3*C_feat + 0.3*C_temp`
+   * `M = V * (0.3 + 0.7*S)`
+
+---
+
+## `hybrid.py`
+
+### 必改
+
+1. 输出 `test.txt`
+2. 输出 split 信息
+3. manifest 里写：
+
+   * `is_pseudo`
+   * `split`
+   * `image_name`
+
+---
+
+## `dataset_readers.py`
+
+### 必改
+
+1. 优先读 `test.txt`
+2. Part 3 场景不要再默认 `llffhold` 把 pseudo 混进 test
+
+---
+
+## `render.py`
+
+### 建议改
+
+保存 render 与 view name 的映射，供 compare 脚本分组。
+
+---
+
+## `compare_part3_metrics.py`
+
+### 必改
+
+输出：
+
+* `real_only_full_metrics`
+* `pseudo_full_metrics`
+* `pseudo_masked_normalized_metrics`
+* `pseudo_masked_unnormalized_debug`
+
+---
+
+# 十一、修完后怎么判断“成功”
+
+不是看单个总 PSNR，而是看下面这些是否成立：
+
+### 成功标准 1
+
+`real_only full-image metrics` 中：
+
+* `gen_conf`
+* `gen_full`
+
+至少不再被 `gen_raw` 大幅甩开
+
+### 成功标准 2
+
+`pseudo_masked_normalized metrics` 中：
+
+* `gen_conf` 优于 `gen_raw`
+* `gen_full` 在 consistency 指标上优于 `gen_conf`
+
+### 成功标准 3
+
+日志中的：
+
+* `mask_mean`
+* `effective_pseudo_weight`
+
+回到合理区间
+比如：
+
+* `mask_mean` 不要长期低于 `0.4`
+* `effective_pseudo_weight` 不要长期接近 `0.1` 或更低
+
+### 成功标准 4
+
+训练日志中的：
+
+* `masked_unnorm_psnr`
+* `masked_norm_psnr`
+* `full_psnr`
+
+三者关系变得可解释，不再出现“27 vs 12”这种一眼看上去像出 bug 的冲突。
+
+---
+
+# 十二、一句话版最终方案
+
+> **conf + consis 的最终正确落地方式应该是：**
+> 用 **真实 held-out views 的 full-image 指标** 作为主结果；
+> 用 **pseudo masked normalized 指标** 评估 conf/consis 是否真的提升可信区域质量；
+> 训练中采用 **normalized masked loss + confidence floor + hard validity × soft confidence**；
+> consistency 只负责**样本级采样偏置**，不再和空间 mask 一起把 pseudo supervision 双重压弱。
