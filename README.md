@@ -1,88 +1,218 @@
 # Generative Sparse-View 3D Reconstruction
 
-Course project for AIAA 3201 Project 4. The project studies the same scenes under three settings:
+Course project codebase for AIAA 3201 Project 4. The repository is organized as
+a code-first submission: source code, configs, and scripts are committed;
+datasets, checkpoints, report build artifacts, generated pseudo-views,
+intermediate COLMAP scenes, and training outputs are intentionally ignored.
 
-1. Dense posed reconstruction: compare COLMAP initialization with VGGT/foundation-model initialization for 3D Gaussian Splatting.
-2. Sparse unposed reconstruction: subsample frames, hide camera poses, infer geometry with DUSt3R, export to COLMAP/3DGS, and evaluate ATE plus rendering metrics.
-3. Generative sparse-view enhancement: generate pseudo-views with DynamiCrafter, attach interpolated/refined poses, build confidence masks, and train 3DGS with masked pseudo-view supervision.
+## Project Overview
 
-The report sources and figures are under `anlysis_script_and_results/`. Large data, checkpoints, generated pseudo-views, DUSt3R outputs, and 3DGS training outputs are intentionally excluded from git by `.gitignore`.
+We study sparse-view 3D reconstruction in three stages.
+
+1. **Part 1: Dense posed reconstruction.** Compare COLMAP initialization and
+   VGGT initialization for 3D Gaussian Splatting (3DGS).
+2. **Part 2: Sparse unposed reconstruction.** Subsample frames, hide poses,
+   estimate geometry with DUSt3R, convert predictions to COLMAP/3DGS format,
+   and evaluate ATE plus rendering metrics.
+3. **Part 3: Generative sparse-view enhancement.** Generate pseudo-views with
+   DynamiCrafter, attach interpolated/refined poses, build confidence masks,
+   and train 3DGS with masked pseudo-view supervision. The optional pretrained
+   route uses MASt3R for feature confidence and SEA-RAFT for temporal
+   confidence.
 
 ## Repository Layout
 
 ```text
 .
-|-- scripts/                         # Part 1 / 3DGS helper shell scripts
+|-- scripts/                         # Part 1 / 3DGS helper scripts
 |-- part3/
 |   |-- apps/                        # Part 3 CLI entrypoints
-|   |-- src/part3_stack/             # Manual confidence pipeline
-|   |-- src/part3_stack_pretrained/  # MASt3R + SEA-RAFT confidence route
+|   |-- configs/                     # Portable Part 3 config templates
 |   |-- scripts/                     # Part 3 shell wrappers
-|   `-- configs/                     # Portable Part 3 config templates
-|-- build_pairs.py                   # Sparse DUSt3R pair graph builder
-|-- subsample_p2_frames.py           # Part 2 frame subsampling
-|-- run_dust3r_inference.py          # DUSt3R inference and global alignment
-|-- dust3r_to_colmap.py              # DUSt3R result to COLMAP/3DGS scene
-|-- eval_ate_rmse.py                 # Sim(3)-aligned ATE RMSE
-|-- gaussian-splatting/              # 3DGS codebase
-|-- dust3r/                          # DUSt3R codebase
-`-- vggt/                            # VGGT codebase
+|   |-- src/part3_stack/             # Manual confidence pipeline
+|   `-- src/part3_stack_pretrained/  # MASt3R + SEA-RAFT confidence route
+|-- gaussian-splatting/              # 3DGS codebase used by the project
+|-- dust3r/                          # DUSt3R codebase used by the project
+|-- vggt/                            # VGGT codebase used by the project
+|-- build_pairs.py
+|-- subsample_p2_frames.py
+|-- run_dust3r_inference.py
+|-- dust3r_to_colmap.py
+`-- eval_ate_rmse.py
 ```
 
-## Environments
-
-The code uses separate environments because 3DGS CUDA extensions, DUSt3R/VGGT, and DynamiCrafter often need different dependency sets.
-
-```bash
-# 3DGS training/evaluation, CUDA 12.4
-conda env create -f environment-3dgs-cu124.yml
-
-# DUSt3R inference and Part 2 conversion utilities
-conda env create -f environment-dust3r.yml
-
-# DynamiCrafter pseudo-view generation
-conda env create -f environment-dynamicrafter.yml
-```
-
-External system tools:
-
-- `COLMAP` must be available as `colmap`.
-- CUDA toolkit / compiler support is needed to build the 3DGS rasterization extensions.
-- For VGGT, install the local package from `vggt/` and, if using `demo_colmap.py`, also install `vggt/requirements_demo.txt`.
-
-Weights are not committed. Put them at paths you control, for example:
+The following directories are local placeholders and are ignored except for
+their README files:
 
 ```text
-/path/to/your/CVproj/dust3r/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth
-/path/to/your/CVproj/part3/DynamiCrafter512_interp.ckpt
-/path/to/your/CVproj/pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
-/path/to/your/CVproj/pretrained/Tartan480x640-M.pth
+data/              # put course datasets here
+external/          # clone DynamiCrafter, MASt3R, SEA-RAFT here if needed
+pretrained/        # put model checkpoints here
+outputs/           # generated COLMAP/DUSt3R/3DGS outputs
+part3/workspace/   # generated Part 3 pseudo-views, masks, hybrid scenes
+analysis_script_and_results/ # optional local report figures and LaTeX source
 ```
 
-For Part 3, the default config is `part3/configs/project.json`. Paths in that file are relative to the repository root. If your data or checkpoints live elsewhere, edit the config or pass `--config /path/to/your/project.json`.
+## Path Customization
+
+Before running the code, check these paths and replace them with your local
+locations when needed:
+
+- `data/`: course datasets.
+- `outputs/dust3r_to_colmap/`: Part 2 exported sparse scenes consumed by Part 3.
+- `part3/configs/*.json`: project root, external repo paths, checkpoint paths,
+  and workspace root.
+- `pretrained/DynamiCrafter512_interp.ckpt`: DynamiCrafter interpolation
+  checkpoint.
+- `pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth`: DUSt3R checkpoint.
+- `pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth`: MASt3R
+  checkpoint.
+- `pretrained/Tartan480x640-M.pth`: SEA-RAFT checkpoint.
+- `PART3_WORKSPACE_ROOT=/path/to/your/workspace`: optional override for Part 3
+  3DGS outputs on a large disk.
+
+All commands below assume they are launched from the repository root unless a
+subdirectory is explicitly shown.
+
+## Environment Setup
+
+The project uses separate environments because 3DGS CUDA extensions,
+DUSt3R/VGGT, and DynamiCrafter have different dependency constraints.
+
+<details>
+<summary>COLMAP system install</summary>
+
+Install COLMAP so the command `colmap` is available on your `PATH`.
+
+```bash
+colmap -h
+```
+
+On a cluster, load the provided COLMAP module if available. On a local Linux
+machine, follow the official COLMAP installation instructions.
+
+</details>
+
+<details>
+<summary>3DGS environment</summary>
+
+```bash
+conda env create -f environment-3dgs-cu124.yml
+conda activate cvproj-3dgs
+
+cd gaussian-splatting
+pip install -e submodules/diff-gaussian-rasterization
+pip install -e submodules/simple-knn
+pip install -e submodules/fused-ssim
+cd ..
+```
+
+If your CUDA version differs from CUDA 12.4, adjust the environment file or use
+the original `gaussian-splatting/environment.yml`.
+
+</details>
+
+<details>
+<summary>DUSt3R environment</summary>
+
+```bash
+conda env create -f environment-dust3r.yml
+conda activate dust3r
+pip install -r dust3r/requirements.txt
+```
+
+Place the DUSt3R checkpoint at:
+
+```text
+pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth
+```
+
+</details>
+
+<details>
+<summary>VGGT environment</summary>
+
+```bash
+conda create -n vggt python=3.10 -y
+conda activate vggt
+cd vggt
+pip install -e .
+pip install -r requirements.txt
+pip install -r requirements_demo.txt
+cd ..
+```
+
+Store VGGT weights wherever you prefer and pass the checkpoint path in the
+VGGT commands below.
+
+</details>
+
+<details>
+<summary>DynamiCrafter environment</summary>
+
+Clone DynamiCrafter into `external/DynamiCrafter` and create the environment:
+
+```bash
+git clone https://github.com/Doubiiu/DynamiCrafter external/DynamiCrafter
+conda env create -f environment-dynamicrafter.yml
+conda activate dynamicrafter
+pip install -r requirements-dynamicrafter.txt
+```
+
+Place the interpolation checkpoint at:
+
+```text
+pretrained/DynamiCrafter512_interp.ckpt
+```
+
+</details>
+
+<details>
+<summary>Optional MASt3R + SEA-RAFT route</summary>
+
+The pretrained Part 3 route expects:
+
+```text
+external/MASt3R/
+external/SEA-RAFT/
+pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
+pretrained/Tartan480x640-M.pth
+```
+
+If you clone these repositories elsewhere, update:
+
+```text
+part3/configs/project_pretrained_conf.json
+part3/configs/project_pretrained_full.json
+part3/configs/project_pretrained_raw.json
+```
+
+</details>
 
 ## Data Layout
 
-Expected mandatory data layout:
+The real data is not committed. Place it under `data/` or update the command
+paths.
 
 ```text
 data/
-|-- 405841/FRONT/rgb/*.png
-|-- 405841/FRONT/calib/*.txt
-|-- 405841/FRONT/gt/*.txt
-|-- DL3DV-2/rgb/*.png
-|-- DL3DV-2/cameras.json
-|-- DL3DV-2/intrinsics.json
-|-- Re10k-1/images/*.png
-|-- Re10k-1/cameras.json
-`-- Re10k-1/intrinsics.json
+|-- 405841/FRONT/
+|   |-- rgb/*.png
+|   |-- calib/*.txt
+|   `-- gt/*.txt
+|-- DL3DV-2/
+|   |-- rgb/*.png
+|   |-- cameras.json
+|   `-- intrinsics.json
+`-- Re10k-1/
+    |-- images/*.png
+    |-- cameras.json
+    `-- intrinsics.json
 ```
-
-Run commands from the repository root unless noted.
 
 ## Part 1: Dense COLMAP/VGGT + 3DGS
 
-Plan A uses COLMAP to initialize 3DGS.
+### Plan A: COLMAP initialization
 
 ```bash
 conda activate cvproj-3dgs
@@ -92,27 +222,27 @@ bash scripts/inspect_colmap.sh re10k
 bash scripts/organize_3dgs_scene.sh Re10k-1 0
 ```
 
-Place the final COLMAP scene in one of the locations searched by `scripts/train_3dgs.sh`, for example:
+Repeat with `dl3dv` / `DL3DV-2` and `waymo_front` / `405841_FRONT`.
 
-```text
-scenes_3dgs/PlanA/Re10k-1/{images,sparse/0}
-```
-
-Plan B uses the official VGGT COLMAP demo on the dense frames, then trains the same 3DGS code.
+### Plan B: VGGT initialization
 
 ```bash
 conda activate vggt
 cd vggt
 python demo_colmap.py \
-  --scene_dir /path/to/your/CVproj/scenes_3dgs/PlanB/Re10k-1 \
-  --weights /path/to/your/VGGT-1B/model.safetensors
+  --scene_dir ../outputs/vggt_colmap/Re10k-1 \
+  --weights path/to/your/VGGT-1B/model.safetensors
 cd ..
 ```
 
-Train and evaluate either plan:
+Move or symlink the resulting COLMAP-style scene to the layout used by the 3DGS
+training scripts.
+
+### Train and evaluate 3DGS
 
 ```bash
 conda activate cvproj-3dgs
+
 bash scripts/train_3dgs.sh Re10k-1 PlanA
 bash scripts/eval_3dgs.sh Re10k-1 PlanA
 
@@ -120,11 +250,20 @@ bash scripts/train_3dgs.sh Re10k-1 PlanB
 bash scripts/eval_3dgs.sh Re10k-1 PlanB
 ```
 
-Repeat for `DL3DV-2` and `405841_FRONT`. The report compares convergence and final PSNR/SSIM/LPIPS between COLMAP and VGGT initialization.
+<details>
+<summary>Part 1 notes</summary>
+
+- `PlanA` denotes COLMAP initialization.
+- `PlanB` denotes VGGT-to-COLMAP initialization.
+- Outputs are written under `outputs/3dgs/<Plan>/<Scene>/` by the portable
+  scripts.
+- Use `CUDA_VISIBLE_DEVICES=<gpu_id>` before a command to select a GPU.
+
+</details>
 
 ## Part 2: Sparse Unposed DUSt3R
 
-Subsample the dense data according to the project requirement: Waymo 1/10, DL3DV/Re10k 1/30. Ground-truth poses are saved only under `eval_meta/` for ATE evaluation.
+### Subsample sparse frames
 
 ```bash
 conda activate dust3r
@@ -133,26 +272,30 @@ python subsample_p2_frames.py \
   --data_root data \
   --out_root data_p2_sparse \
   --save_eval_meta
+```
 
+### Build DUSt3R pairs
+
+```bash
 python build_pairs.py \
   --root data_p2_sparse \
   --scene-graph swin-2 \
   --symmetrize
 ```
 
-Run DUSt3R inference and global alignment:
+### Run DUSt3R inference
 
 ```bash
 python run_dust3r_inference.py \
   --root data_p2_sparse \
   --output-root outputs/dust3r/results_dust3r_light \
   --dust3r-repo dust3r \
-  --weights /path/to/your/CVproj/dust3r/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth \
+  --weights pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth \
   --scene-graph swin-2 \
   --min-conf-thr 3.0
 ```
 
-Evaluate pose error:
+### Evaluate ATE RMSE
 
 ```bash
 python eval_ate_rmse.py \
@@ -161,7 +304,7 @@ python eval_ate_rmse.py \
   --output outputs/dust3r/ate_rmse_summary.json
 ```
 
-Export DUSt3R predictions to COLMAP/3DGS format:
+### Export DUSt3R results to COLMAP/3DGS format
 
 ```bash
 python dust3r_to_colmap.py \
@@ -170,10 +313,11 @@ python dust3r_to_colmap.py \
   --overwrite
 ```
 
-Train 3DGS on a converted sparse scene:
+### Train and evaluate sparse 3DGS
 
 ```bash
 conda activate cvproj-3dgs
+
 cd gaussian-splatting
 python train.py \
   -s ../outputs/dust3r_to_colmap/dust3r_light/Re10k-1 \
@@ -181,74 +325,147 @@ python train.py \
   --eval \
   --test_iterations 1000 3000 7000 15000 30000 \
   --save_iterations 1000 3000 7000 15000 30000
+
+python render.py -m ../outputs/3dgs/dust3r_light/Re10k-1 --skip_train
+python metrics.py -m ../outputs/3dgs/dust3r_light/Re10k-1
 cd ..
 ```
 
 ## Part 3: Generated Pseudo-Views + Confidence
 
-Part 3 consumes the Part 2 scene exported at:
+Part 3 consumes the Part 2 exported scene:
 
 ```text
 outputs/dust3r_to_colmap/dust3r_light/<scene>
 ```
 
-Put the DynamiCrafter repo at `part3/DynamiCrafter/` and the interpolation checkpoint at `part3/DynamiCrafter512_interp.ckpt`, or update `part3/configs/project.json`.
+The default configs are under `part3/configs/`. They use repo-relative paths
+and write generated artifacts to `part3/workspace/`.
 
-Run the full manual route for one scene:
+### Manual raw/conf/full route
+
+Generate one shared pseudo-view set per scene and derive the three ablation
+variants:
 
 ```bash
 conda activate dust3r
-bash part3/scripts/run_part3_pipeline.sh Re10k-1
-```
 
-For the final ablations, reuse one generated pseudo-view set and build `raw`, `conf`, and `full` variants:
-
-```bash
 SCENES="405841_FRONT DL3DV-2 Re10k-1" \
   bash part3/scripts/run_reuse_pseudo_ablation.sh
 ```
 
-Train a generated-view hybrid scene:
+This creates hybrid scenes such as:
+
+```text
+part3/workspace/hybrid_scenes/Re10k-1_gen_raw
+part3/workspace/hybrid_scenes/Re10k-1_gen_conf
+part3/workspace/hybrid_scenes/Re10k-1_gen_full
+```
+
+### Optional pretrained MASt3R + SEA-RAFT route
 
 ```bash
-conda activate cvproj-3dgs
+conda activate dust3r
+
+SCENES="405841_FRONT DL3DV-2 Re10k-1" \
+  bash part3/scripts/run_reuse_pseudo_pretrained_ablation.sh
+```
+
+Make sure the MASt3R/SEA-RAFT repos and checkpoints match the paths in
+`part3/configs/project_pretrained_full.json`.
+
+### Train commands
+
+Use `PART3_WORKSPACE_ROOT` to move outputs to a large disk if needed.
+
+```bash
+PART3_WORKSPACE_ROOT=path/to/your/part3/workspace \
+CUDA_VISIBLE_DEVICES=0 \
+bash part3/scripts/train_part3_3dgs.sh \
+  part3/workspace/hybrid_scenes/Re10k-1_gen_conf \
+  Re10k-1_gen_conf \
+  30000 \
+  --confidence_manifest part3/workspace/runs/Re10k-1/Re10k-1_gen_conf/confidence/confidence_manifest.json
+```
+
+For `full`, add online confidence:
+
+```bash
+PART3_WORKSPACE_ROOT=path/to/your/part3/workspace \
+CUDA_VISIBLE_DEVICES=0 \
 bash part3/scripts/train_part3_3dgs.sh \
   part3/workspace/hybrid_scenes/Re10k-1_gen_full \
   Re10k-1_gen_full \
   30000 \
   --confidence_manifest part3/workspace/runs/Re10k-1/Re10k-1_gen_full/confidence/confidence_manifest.json \
   --enable_online_confidence
+```
 
+### Evaluation commands
+
+```bash
+PART3_WORKSPACE_ROOT=path/to/your/part3/workspace \
 bash part3/scripts/eval_part3_3dgs.sh \
-  part3/workspace/3dgs_outputs/Re10k-1_gen_full
+  path/to/your/part3/workspace/3dgs_outputs/Re10k-1_gen_conf
+
+PART3_WORKSPACE_ROOT=path/to/your/part3/workspace \
+bash part3/scripts/eval_part3_3dgs.sh \
+  path/to/your/part3/workspace/3dgs_outputs/Re10k-1_gen_full
 ```
 
-Optional pretrained confidence route:
-
-1. Put MASt3R and SEA-RAFT repos under `external/` or edit `part3/configs/project_pretrained_full.json`.
-2. Put checkpoints under `pretrained/` or edit the same config.
-3. Run:
+<details>
+<summary>Common Part 3 overrides</summary>
 
 ```bash
-SCENES="405841_FRONT DL3DV-2 Re10k-1" \
-  bash part3/scripts/run_reuse_pseudo_pretrained_ablation.sh
+# Run one scene only
+SCENE=DL3DV-2 bash part3/scripts/run_reuse_pseudo_ablation.sh
+
+# Rebuild confidence/hybrid variants but reuse generated pseudo frames
+REBUILD_VARIANTS=1 bash part3/scripts/run_reuse_pseudo_ablation.sh
+
+# Build only conf/full variants
+VARIANTS="conf full" bash part3/scripts/run_reuse_pseudo_ablation.sh
+
+# Select GPU
+CUDA_VISIBLE_DEVICES=1 bash part3/scripts/train_part3_3dgs.sh ...
+
+# Move training outputs
+PART3_WORKSPACE_ROOT=path/to/your/part3/workspace bash part3/scripts/train_part3_3dgs.sh ...
 ```
 
-## Analysis and Report Figures
+</details>
 
-The report figures are generated from saved logs:
+## Report and Analysis
+
+The report folder is treated as local-only and is not part of the GitHub
+submission. If you keep local analysis scripts or LaTeX sources, place them
+under `analysis_script_and_results/`; Git will ignore that directory.
 
 ```bash
-python anlysis_script_and_results/part1/compare_plans.py
-python anlysis_script_and_results/part2/analyze_part2.py
 python part3/apps/compare_part3_metrics.py \
-  --baseline /path/to/your/baseline_model \
-  --part3 /path/to/your/part3_model \
-  --output /path/to/your/part3_eval_summary.json
+  --baseline path/to/your/baseline_model \
+  --part3 path/to/your/part3_model \
+  --output path/to/your/part3_eval_summary.json
 ```
 
-The final report summarizes:
+## Large Files and Checkpoints
 
-- Part 1: dense COLMAP gives stronger 3DGS initialization than the current VGGT-to-COLMAP export.
-- Part 2: DUSt3R provides usable sparse unposed poses, evaluated with Sim(3)-aligned ATE RMSE and 3DGS rendering metrics.
-- Part 3: generated pseudo-views help most on weak sparse baselines, while confidence masks and consistency pruning keep pseudo supervision controllable.
+The repository intentionally does not track:
+
+- raw datasets and sparse subsets,
+- COLMAP databases and converted scenes,
+- DUSt3R outputs,
+- 3DGS checkpoints/outputs,
+- Part 3 pseudo-views, confidence maps, and hybrid scenes,
+- pretrained model weights.
+
+Use `data/`, `pretrained/`, `external/`, `outputs/`, and `part3/workspace/`
+locally. These directories are ignored by Git except for their README files.
+
+## Third-Party Licenses
+
+This repository includes project-integrated copies of 3DGS, DUSt3R, and VGGT.
+Their original license files are kept in their respective directories.
+DynamiCrafter, MASt3R, and SEA-RAFT are optional external repositories and
+should be cloned separately under `external/` following their official licenses
+and installation instructions.

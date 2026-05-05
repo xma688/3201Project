@@ -1,0 +1,55 @@
+# Python / editor caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+
+# Logs and experiment artifacts
+*.log
+logs/
+runs/
+wandb/
+tensorboard/
+
+# Course data and generated scenes
+data/*
+!data/README.md
+data_p2_sparse/
+scenes_3dgs*/
+outputs/*
+!outputs/README.md
+part3/workspace*/
+
+# External repositories and model weights
+external/*
+!external/README.md
+pretrained/*
+!pretrained/README.md
+checkpoints/
+*.pth
+*.ckpt
+*.safetensors
+*.pt
+
+# Heavy generated model/data files
+*.db
+*.ply
+*.tar.gz
+*.zip
+
+# Local-only notes and drafts
+part3/改进方案/
+analysis_script_and_results/
+anlysis_script_and_results/

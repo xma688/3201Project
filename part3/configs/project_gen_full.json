@@ -5,8 +5,8 @@
   "dust3r_to_colmap_root": "outputs/dust3r_to_colmap",
   "dust3r_outputs_root": "outputs/dust3r",
   "data_p2_sparse_root": "data_p2_sparse",
-  "dynami_crafter_root": "part3/DynamiCrafter",
-  "dynami_crafter_interp_ckpt": "part3/DynamiCrafter512_interp.ckpt",
+  "dynami_crafter_root": "external/DynamiCrafter",
+  "dynami_crafter_interp_ckpt": "pretrained/DynamiCrafter512_interp.ckpt",
   "workspace_root": "part3/workspace",
   "defaults": {
     "dust3r_variant": "dust3r_light",
