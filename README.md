@@ -83,8 +83,8 @@ depends on which project part you reproduce:
 
 | Weight | Required for | Expected path / usage | Source |
 | --- | --- | --- | --- |
-| DUSt3R `DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | Part 2 and Part 3 sparse initialization | `pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | official DUSt3R release |
-| VGGT model weights, e.g. `model.safetensors` | Part 1 Plan B only | pass with `--weights path/to/your/VGGT-1B/model.safetensors` | official VGGT release |
+| DUSt3R `DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | Part 2 and Part 3 sparse initialization | `pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | [official DUSt3R repository](https://github.com/naver/dust3r) |
+| VGGT model weights | Part 1 Plan B only | downloaded automatically on first inference; optional manual override with `--weights path/to/your/VGGT-1B/model.safetensors` | official VGGT release |
 | DynamiCrafter interpolation checkpoint `DynamiCrafter512_interp.ckpt` | Part 3 pseudo-view generation | `pretrained/DynamiCrafter512_interp.ckpt` | [Hugging Face: DynamiCrafter 512 Interp](https://huggingface.co/Doubiiu/DynamiCrafter_512_Interp/blob/main/model.ckpt) |
 | MASt3R `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | optional pretrained confidence route | `pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | [official MASt3R repository](https://github.com/naver/mast3r) |
 | SEA-RAFT `Tartan480x640-M.pth` | optional pretrained confidence route | `pretrained/Tartan480x640-M.pth` | [official SEA-RAFT Google Drive folder](https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW) |
@@ -150,6 +150,8 @@ Place the DUSt3R checkpoint at:
 pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth
 ```
 
+Download source: [official DUSt3R repository](https://github.com/naver/dust3r).
+
 </details>
 
 <details>
@@ -165,8 +167,9 @@ pip install -r requirements_demo.txt
 cd ..
 ```
 
-Store VGGT weights wherever you prefer and pass the checkpoint path in the
-VGGT commands below.
+VGGT will download its model weights automatically during the first inference
+run if no local checkpoint is provided.  If you already have a local copy, pass
+it with `--weights path/to/your/VGGT-1B/model.safetensors` in the VGGT command.
 
 </details>
 
