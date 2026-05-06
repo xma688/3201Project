@@ -34,6 +34,7 @@ We study sparse-view 3D reconstruction in three stages.
 |-- gaussian-splatting/              # 3DGS codebase used by the project
 |-- dust3r/                          # DUSt3R codebase used by the project
 |-- vggt/                            # VGGT codebase used by the project
+|-- docs/assets/                     # Lightweight README visual results
 |-- build_pairs.py
 |-- subsample_p2_frames.py
 |-- run_dust3r_inference.py
@@ -73,6 +74,28 @@ locations when needed:
 
 All commands below assume they are launched from the repository root unless a
 subdirectory is explicitly shown.
+
+## Model Weights
+
+Large pretrained weights are not committed.  Place or symlink them under
+`pretrained/` unless a command explicitly passes another path.  The minimal set
+depends on which project part you reproduce:
+
+| Weight | Required for | Expected path / usage | Source |
+| --- | --- | --- | --- |
+| DUSt3R `DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | Part 2 and Part 3 sparse initialization | `pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | official DUSt3R release |
+| VGGT model weights, e.g. `model.safetensors` | Part 1 Plan B only | pass with `--weights path/to/your/VGGT-1B/model.safetensors` | official VGGT release |
+| DynamiCrafter interpolation checkpoint `DynamiCrafter512_interp.ckpt` | Part 3 pseudo-view generation | `pretrained/DynamiCrafter512_interp.ckpt` | [Hugging Face: DynamiCrafter 512 Interp](https://huggingface.co/Doubiiu/DynamiCrafter_512_Interp/blob/main/model.ckpt) |
+| MASt3R `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | optional pretrained confidence route | `pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | [official MASt3R repository](https://github.com/naver/mast3r) |
+| SEA-RAFT `Tartan480x640-M.pth` | optional pretrained confidence route | `pretrained/Tartan480x640-M.pth` | [official SEA-RAFT Google Drive folder](https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW) |
+
+3DGS and COLMAP do not require pretrained neural weights in our pipeline: 3DGS
+is trained from each reconstructed scene, and COLMAP is a classical SfM/MVS
+tool.  Keep the exact filenames above if you want to run the provided configs
+without editing paths; otherwise update `part3/configs/*.json` and the command
+arguments accordingly.  For example, the DynamiCrafter download is named
+`model.ckpt` on Hugging Face; rename it or symlink it to
+`pretrained/DynamiCrafter512_interp.ckpt`.
 
 ## Environment Setup
 
@@ -165,6 +188,10 @@ Place the interpolation checkpoint at:
 pretrained/DynamiCrafter512_interp.ckpt
 ```
 
+Download source: [Hugging Face DynamiCrafter 512 Interp](https://huggingface.co/Doubiiu/DynamiCrafter_512_Interp/blob/main/model.ckpt).
+The downloaded file is named `model.ckpt`; rename or symlink it to the path
+above.
+
 </details>
 
 <details>
@@ -178,6 +205,11 @@ external/SEA-RAFT/
 pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 pretrained/Tartan480x640-M.pth
 ```
+
+Download sources:
+
+- MASt3R weights: [official MASt3R repository](https://github.com/naver/mast3r)
+- SEA-RAFT weights: [official Google Drive folder](https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW)
 
 If you clone these repositories elsewhere, update:
 
@@ -434,6 +466,44 @@ PART3_WORKSPACE_ROOT=path/to/your/part3/workspace bash part3/scripts/train_part3
 ```
 
 </details>
+
+## Visual Results
+
+The figures below are lightweight copies of the report visualizations.  They
+are included directly in the README so the submitted repository shows both
+quantitative trends and qualitative Part 3 behavior without requiring the full
+report build directory.
+
+### Part 1: Dense Initialization
+
+COLMAP initialization consistently outperforms the current VGGT-to-COLMAP
+export path for dense 3DGS training.
+
+![Part 1 final PSNR comparison](docs/assets/part1_final_psnr_comparison.png)
+
+### Part 2: Sparse DUSt3R Reconstruction
+
+DUSt3R recovers usable sparse unposed geometry, but rendering quality remains
+limited compared with dense COLMAP initialization.
+
+![Part 2 ATE RMSE comparison](docs/assets/part2_ate_rmse_comparison.png)
+
+![Part 2 final PSNR comparison](docs/assets/part2_final_psnr_comparison.png)
+
+### Part 3: Confidence-Aware Pseudo-Views
+
+The manual route builds masks from coarse visibility, reprojection, feature,
+and temporal confidence; the pretrained route replaces feature/temporal
+backends with MASt3R and SEA-RAFT while keeping the same 3DGS training
+interface.
+
+![Part 3 confidence and mask examples](docs/assets/part3_confidence_examples.png)
+
+Generated pseudo-views improve the weakest sparse DUSt3R cases most clearly,
+especially Re10k-1.  The pretrained route is competitive, while the manual route
+remains slightly stronger at 30k on most scenes.
+
+![Part 3 final render examples](docs/assets/part3_render_examples.png)
 
 ## Report and Analysis
 

@@ -14,5 +14,13 @@ pretrained/
 `-- Tartan480x640-M.pth
 ```
 
+Download sources used by our Part 3 pipeline:
+
+- DynamiCrafter interpolation checkpoint: https://huggingface.co/Doubiiu/DynamiCrafter_512_Interp/blob/main/model.ckpt
+  - The downloaded file is named `model.ckpt`; rename or symlink it to
+    `DynamiCrafter512_interp.ckpt`.
+- MASt3R weights: https://github.com/naver/mast3r
+- SEA-RAFT weights: https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW
+
 If you store weights elsewhere, replace these values in commands or
 `part3/configs/*.json` with `path/to/your/...`.
