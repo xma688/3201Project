@@ -40,6 +40,17 @@ pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth
 pretrained/Tartan480x640-M.pth
 ```
 
+Clone the official code repositories with:
+
+```bash
+git clone https://github.com/naver/mast3r.git external/MASt3R
+git clone https://github.com/princeton-vl/SEA-RAFT.git external/SEA-RAFT
+```
+
+The pretrained route imports official MASt3R and SEA-RAFT modules through thin
+wrappers.  In our tested setup these backends run inside the existing `dust3r`
+environment, so a separate MASt3R/SEA-RAFT conda environment is not required.
+
 Edit `part3/configs/*.json` if your repositories or checkpoints live
 elsewhere.
 

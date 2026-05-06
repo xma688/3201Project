@@ -86,8 +86,8 @@ depends on which project part you reproduce:
 | DUSt3R `DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | Part 2 and Part 3 sparse initialization | `pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth` | [official DUSt3R repository](https://github.com/naver/dust3r) |
 | VGGT model weights | Part 1 Plan B only | downloaded automatically on first inference; optional manual override with `--weights path/to/your/VGGT-1B/model.safetensors` | official VGGT release |
 | DynamiCrafter interpolation checkpoint `DynamiCrafter512_interp.ckpt` | Part 3 pseudo-view generation | `pretrained/DynamiCrafter512_interp.ckpt` | [Hugging Face: DynamiCrafter 512 Interp](https://huggingface.co/Doubiiu/DynamiCrafter_512_Interp/blob/main/model.ckpt) |
-| MASt3R `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | optional pretrained confidence route | `pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | [official MASt3R repository](https://github.com/naver/mast3r) |
-| SEA-RAFT `Tartan480x640-M.pth` | optional pretrained confidence route | `pretrained/Tartan480x640-M.pth` | [official SEA-RAFT Google Drive folder](https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW) |
+| MASt3R `MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth` | optional pretrained confidence route | `pretrained/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth`; code at `external/MASt3R` | [official code](https://github.com/naver/mast3r.git) |
+| SEA-RAFT `Tartan480x640-M.pth` | optional pretrained confidence route | `pretrained/Tartan480x640-M.pth`; code at `external/SEA-RAFT` | [official code](https://github.com/princeton-vl/SEA-RAFT.git), [weights](https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW) |
 
 3DGS and COLMAP do not require pretrained neural weights in our pipeline: 3DGS
 is trained from each reconstructed scene, and COLMAP is a classical SfM/MVS
@@ -211,8 +211,17 @@ pretrained/Tartan480x640-M.pth
 
 Download sources:
 
-- MASt3R weights: [official MASt3R repository](https://github.com/naver/mast3r)
+- MASt3R code and weights: [official MASt3R repository](https://github.com/naver/mast3r.git)
+- SEA-RAFT code: [official SEA-RAFT repository](https://github.com/princeton-vl/SEA-RAFT.git)
 - SEA-RAFT weights: [official Google Drive folder](https://drive.google.com/drive/folders/1YLovlvUW94vciWvTyLf-p3uWscbOQRWW)
+
+Our pretrained mask route wraps the official MASt3R and SEA-RAFT model modules
+for offline confidence-map construction; it does not vendor these repositories
+inside this submission.  In our tested setup, the existing `dust3r` environment
+can run both pretrained backends, so no separate MASt3R/SEA-RAFT conda
+environment is required.  If your machine cannot import either repo from the
+current environment, install the missing package dependencies in that same
+environment.
 
 If you clone these repositories elsewhere, update:
 
@@ -407,7 +416,10 @@ SCENES="405841_FRONT DL3DV-2 Re10k-1" \
 ```
 
 Make sure the MASt3R/SEA-RAFT repos and checkpoints match the paths in
-`part3/configs/project_pretrained_full.json`.
+`part3/configs/project_pretrained_full.json`.  The wrappers import official
+code from `external/MASt3R` and `external/SEA-RAFT`; in our environment this
+runs inside the same `dust3r` environment used for Part 2/3, without an extra
+MASt3R- or SEA-RAFT-specific conda environment.
 
 ### Train commands
 
@@ -540,5 +552,7 @@ locally. These directories are ignored by Git except for their README files.
 This repository includes project-integrated copies of 3DGS, DUSt3R, and VGGT.
 Their original license files are kept in their respective directories.
 DynamiCrafter, MASt3R, and SEA-RAFT are optional external repositories and
-should be cloned separately under `external/` following their official licenses
-and installation instructions.
+should be cloned separately under `external/` following their official
+licenses.  The pretrained Part 3 route uses MASt3R/SEA-RAFT through lightweight
+wrappers around their official code, and our tested environment does not require
+creating separate conda environments for those two repositories.
