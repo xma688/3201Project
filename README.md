@@ -105,14 +105,57 @@ DUSt3R/VGGT, and DynamiCrafter have different dependency constraints.
 <details>
 <summary>COLMAP system install</summary>
 
-Install COLMAP so the command `colmap` is available on your `PATH`.
+Install COLMAP so the command `colmap` is available on your `PATH` whenever you
+run scripts that call COLMAP.  This matters for Part 1 COLMAP initialization,
+and for any Part 2/Part 3 conversion or inspection step that expects COLMAP
+utilities.
+
+The default setup we used for Part 1 is a separate lightweight COLMAP
+environment:
+
+```bash
+conda create -n colmap-env -c conda-forge colmap -y
+conda activate colmap-env
+colmap -h
+```
+
+You can also install COLMAP into another environment, including `cvproj-3dgs`,
+as long as `colmap -h` succeeds before running scripts that call COLMAP:
+
+```bash
+conda activate cvproj-3dgs
+conda install conda-forge::colmap
+colmap -h
+```
+
+If you use a separate COLMAP environment, activate it before running commands
+that invoke `colmap`, or make sure the installed `colmap` binary is visible on
+`PATH` from the environment where you launch the project scripts.  In the
+default Part 1 workflow, run the COLMAP reconstruction helpers from
+`colmap-env`, then switch to `cvproj-3dgs` for 3DGS training and evaluation.
+
+Quick check:
 
 ```bash
 colmap -h
 ```
 
-On a cluster, load the provided COLMAP module if available. On a local Linux
-machine, follow the official COLMAP installation instructions.
+On a cluster, loading a provided COLMAP module is also fine as long as the same
+`colmap -h` check succeeds in the shell where you run Part 1/2/3 scripts.
+
+Script behavior:
+
+- Part 1 COLMAP helpers (`scripts/run_colmap.sh`,
+  `scripts/inspect_colmap.sh`, `scripts/organize_3dgs_scene.sh`, and
+  `scripts/check_3dgs_scene.sh`) do **not** activate conda automatically; they
+  call the `colmap` binary visible from the current shell.
+- Part 2's `dust3r_to_colmap.py` writes a COLMAP-format scene with Python; it
+  does not call the external `colmap` binary.  COLMAP is only needed if you run
+  additional inspection/conversion helpers that invoke `colmap model_converter`.
+- Part 3 pseudo-view build scripts switch between their Python environments
+  with `conda run` for DUSt3R/DynamiCrafter stages, but they do not switch into
+  a COLMAP-specific environment and normally do not call the `colmap` binary.
+  The hybrid scenes are already written in COLMAP/3DGS layout.
 
 </details>
 
@@ -259,7 +302,7 @@ data/
 ### Plan A: COLMAP initialization
 
 ```bash
-conda activate cvproj-3dgs
+conda activate colmap-env
 
 bash scripts/run_colmap.sh re10k sequential 1
 bash scripts/inspect_colmap.sh re10k
@@ -299,6 +342,10 @@ bash scripts/eval_3dgs.sh Re10k-1 PlanB
 
 - `PlanA` denotes COLMAP initialization.
 - `PlanB` denotes VGGT-to-COLMAP initialization.
+- The Part 1 COLMAP shell scripts do not auto-switch conda environments.  The
+  default is to run `run_colmap.sh`, `inspect_colmap.sh`, and
+  `organize_3dgs_scene.sh` from `colmap-env`, then switch to `cvproj-3dgs` for
+  `train_3dgs.sh` and `eval_3dgs.sh`.
 - Outputs are written under `outputs/3dgs/<Plan>/<Scene>/` by the portable
   scripts.
 - Use `CUDA_VISIBLE_DEVICES=<gpu_id>` before a command to select a GPU.
@@ -357,6 +404,11 @@ python dust3r_to_colmap.py \
   --overwrite
 ```
 
+This exporter does not run the external COLMAP binary; it writes cameras,
+images, points, and copied/symlinked images in the COLMAP/3DGS directory
+layout.  If you later use `scripts/check_3dgs_scene.sh` or another helper that
+calls `colmap model_converter`, make sure `colmap -h` works in that shell.
+
 ### Train and evaluate sparse 3DGS
 
 ```bash
@@ -398,6 +450,11 @@ SCENES="405841_FRONT DL3DV-2 Re10k-1" \
   bash part3/scripts/run_reuse_pseudo_ablation.sh
 ```
 
+This wrapper auto-switches stages with `conda run`: `PREP_ENV=dust3r`,
+`GEN_ENV=dynamicrafter`, and `BUILD_ENV=dust3r` by default.  You can override
+these names, e.g. `GEN_ENV=my_dynamicrafter_env`.  The script itself does not
+activate or require a COLMAP environment.
+
 This creates hybrid scenes such as:
 
 ```text
@@ -415,6 +472,12 @@ SCENES="405841_FRONT DL3DV-2 Re10k-1" \
   bash part3/scripts/run_reuse_pseudo_pretrained_ablation.sh
 ```
 
+This pretrained wrapper uses the same automatic stage switching:
+`PREP_ENV=dust3r`, `GEN_ENV=dynamicrafter`, and `BUILD_ENV=dust3r` by default.
+MASt3R and SEA-RAFT are imported inside `BUILD_ENV`; in our tested setup the
+same `dust3r` environment can run both backends.  No COLMAP environment is
+entered by this script.
+
 Make sure the MASt3R/SEA-RAFT repos and checkpoints match the paths in
 `part3/configs/project_pretrained_full.json`.  The wrappers import official
 code from `external/MASt3R` and `external/SEA-RAFT`; in our environment this
@@ -424,6 +487,8 @@ MASt3R- or SEA-RAFT-specific conda environment.
 ### Train commands
 
 Use `PART3_WORKSPACE_ROOT` to move outputs to a large disk if needed.
+The train/eval wrappers below do not auto-switch environments; run them from
+the 3DGS environment, for example `conda activate cvproj-3dgs`.
 
 ```bash
 PART3_WORKSPACE_ROOT=path/to/your/part3/workspace \
